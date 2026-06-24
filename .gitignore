@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.DS_Store
+
+# Heavy experiment outputs are intentionally easy to regenerate.
+artifacts/*
+!artifacts/.gitkeep
+submissions/*
+!submissions/.gitkeep
+
+# reports/metrics and summary CSV files are tracked so Colab can push decisions to GitHub.
+
+# Local secrets and virtual environments.
+.env
+.venv/
+venv/
+id_*

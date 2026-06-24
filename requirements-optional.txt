@@ -1,0 +1,2 @@
+# Optional heavy dependencies for dense retrieval and cross-encoder reranking.
+sentence-transformers>=3.0
