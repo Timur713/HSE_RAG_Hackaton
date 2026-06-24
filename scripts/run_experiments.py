@@ -15,6 +15,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument(
+        "--comparison-baseline",
+        default="bm25_doc",
+        help="Experiment used for paired delta/wins/losses in summary when present.",
+    )
+    parser.add_argument(
         "--eval-depth",
         "--top-k",
         dest="eval_depth",
@@ -36,6 +41,7 @@ def main() -> None:
         seed=args.seed,
         n_splits=args.n_splits,
         eval_depth=args.eval_depth,
+        comparison_baseline=args.comparison_baseline,
     )
     cols = [
         "experiment",
@@ -44,12 +50,22 @@ def main() -> None:
         "train_recall@5_mean",
         "train_recall@5_std",
         "valid_recall@5_mean",
+        "valid_recall@5_micro",
+        "valid_recall@5_se",
         "valid_recall@5_std",
+        "valid_recall@5_delta_vs_baseline",
+        "valid_recall@5_wins_vs_baseline",
+        "valid_recall@5_losses_vs_baseline",
         "valid_recall@10_mean",
         "valid_recall@20_mean",
         "valid_recall@50_mean",
         "holdout_recall@5_mean",
+        "holdout_recall@5_micro",
+        "holdout_recall@5_se",
         "holdout_recall@5_std",
+        "holdout_recall@5_delta_vs_baseline",
+        "holdout_recall@5_wins_vs_baseline",
+        "holdout_recall@5_losses_vs_baseline",
         "holdout_recall@10_mean",
         "holdout_recall@20_mean",
         "holdout_recall@50_mean",

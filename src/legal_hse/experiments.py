@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,7 @@ from legal_hse.config import PathConfig
 from legal_hse.data import load_data
 from legal_hse.fusion import aggregate_chunk_results, dedupe_ranked_docs, rrf_fusion
 from legal_hse.features import add_field_aware_text
-from legal_hse.metrics import evaluate_predictions
+from legal_hse.metrics import dedupe_topk, evaluate_predictions
 from legal_hse.retrievers.base import SearchResult
 from legal_hse.retrievers.bm25 import BM25Config, BM25Retriever
 from legal_hse.retrievers.dense import DenseConfig, DenseRetriever
@@ -25,6 +26,7 @@ EVAL_KS = (5, 10, 20, 50)
 DEFAULT_EVAL_DEPTH = max(EVAL_KS)
 METRIC_COLUMNS = [f"recall@{k}" for k in EVAL_KS]
 EVAL_PART_ORDER = ("train", "valid", "holdout")
+DEFAULT_COMPARISON_BASELINE = "bm25_doc"
 
 
 @dataclass(frozen=True)
@@ -293,6 +295,7 @@ def run_suite(
     n_splits: int = 5,
     eval_depth: int = DEFAULT_EVAL_DEPTH,
     run_id: str | None = None,
+    comparison_baseline: str = DEFAULT_COMPARISON_BASELINE,
 ) -> pd.DataFrame:
     paths = PathConfig.from_root(data_dir)
     paths.ensure_dirs()
@@ -302,16 +305,18 @@ def run_suite(
     metrics_dir = output / "metrics"
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
-    specs = default_experiments(include_optional=include_optional)
+    all_specs = default_experiments(include_optional=include_optional)
+    specs = all_specs
     if experiment_names:
         selected = set(experiment_names)
-        specs = [spec for spec in specs if spec.name in selected]
-        missing = selected.difference({spec.name for spec in specs})
+        specs = [spec for spec in all_specs if spec.name in selected]
+        missing = selected.difference({spec.name for spec in all_specs})
         if missing:
             raise ValueError(f"Unknown experiment names: {sorted(missing)}")
 
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     records: list[dict[str, Any]] = []
+    query_records: list[dict[str, Any]] = []
     metrics_path = metrics_dir / f"{run_id}.jsonl"
 
     for split, eval_frames in _make_eval_folds(data.train, mode=mode, seed=seed, n_splits=n_splits):
@@ -340,7 +345,7 @@ def run_suite(
                 ranking_depth = max(eval_depth, int(spec.params.get("rank_depth", DEFAULT_EVAL_DEPTH)))
                 rankings = rank_queries(
                     spec,
-                    specs,
+                    all_specs,
                     data.documents,
                     queries,
                     top_k=ranking_depth,
@@ -351,6 +356,7 @@ def run_suite(
                     part_rankings = [ranking for ranking, keep in zip(rankings, mask, strict=True) if keep]
                     predictions = [[item.doc_id for item in ranking[:ranking_depth]] for ranking in part_rankings]
                     gold = frame["gold_doc_id"].astype(str).tolist()
+                    qids = frame["qid"].astype(str).tolist()
                     record = {
                         **base_record,
                         "eval_part": eval_part,
@@ -360,6 +366,15 @@ def run_suite(
                     record.update(evaluate_predictions(gold, predictions, ks=EVAL_KS))
                     record["duration_sec"] = (datetime.now(timezone.utc) - started).total_seconds()
                     records.append(record)
+                    query_records.extend(
+                        _query_hit_records(
+                            base_record,
+                            eval_part=eval_part,
+                            qids=qids,
+                            gold=gold,
+                            predictions=predictions,
+                        )
+                    )
                     with metrics_path.open("a", encoding="utf-8") as fh:
                         fh.write(json.dumps(_jsonable(record), ensure_ascii=False) + "\n")
             except Exception as exc:  # noqa: BLE001 - experiment failures should be logged, not hide previous metrics.
@@ -377,17 +392,25 @@ def run_suite(
                         fh.write(json.dumps(_jsonable(record), ensure_ascii=False) + "\n")
 
     raw = pd.DataFrame(records)
-    summary = aggregate_validation_records(raw)
+    query_hits = pd.DataFrame(query_records)
+    summary = aggregate_validation_records(raw, query_hits=query_hits, comparison_baseline=comparison_baseline)
     raw_path = output / f"folds_{run_id}.csv"
+    query_hits_path = output / f"query_hits_{run_id}.csv"
     summary_path = output / f"summary_{run_id}.csv"
     latest_path = output / "summary_latest.csv"
     raw.to_csv(raw_path, index=False)
+    query_hits.to_csv(query_hits_path, index=False)
     summary.to_csv(summary_path, index=False)
     summary.to_csv(latest_path, index=False)
     return summary
 
 
-def aggregate_validation_records(raw: pd.DataFrame) -> pd.DataFrame:
+def aggregate_validation_records(
+    raw: pd.DataFrame,
+    *,
+    query_hits: pd.DataFrame | None = None,
+    comparison_baseline: str = DEFAULT_COMPARISON_BASELINE,
+) -> pd.DataFrame:
     if raw.empty:
         return raw
 
@@ -411,11 +434,97 @@ def aggregate_validation_records(raw: pd.DataFrame) -> pd.DataFrame:
             if part.empty:
                 continue
             row[f"{eval_part}_n_eval_mean"] = part["n_eval"].mean()
+            row[f"{eval_part}_n_eval_total"] = part["n_eval"].sum()
             for metric in METRIC_COLUMNS:
                 row[f"{eval_part}_{metric}_mean"] = part[metric].mean()
-                row[f"{eval_part}_{metric}_std"] = part[metric].std(ddof=1) if len(part) > 1 else pd.NA
+                metric_std = part[metric].std(ddof=1) if len(part) > 1 else pd.NA
+                row[f"{eval_part}_{metric}_std"] = metric_std
+                row[f"{eval_part}_{metric}_se"] = metric_std / math.sqrt(len(part)) if len(part) > 1 else pd.NA
+                row[f"{eval_part}_{metric}_micro"] = _weighted_metric(part, metric)
+            if query_hits is not None and not query_hits.empty:
+                row.update(
+                    _paired_comparison_summary(
+                        query_hits,
+                        experiment=experiment,
+                        eval_part=eval_part,
+                        baseline=comparison_baseline,
+                    )
+                )
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def _weighted_metric(part: pd.DataFrame, metric: str) -> float | Any:
+    total = part["n_eval"].sum()
+    if total == 0:
+        return pd.NA
+    return float((part[metric] * part["n_eval"]).sum() / total)
+
+
+def _query_hit_records(
+    base_record: dict[str, Any],
+    *,
+    eval_part: str,
+    qids: list[str],
+    gold: list[str],
+    predictions: list[list[str]],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for qid, expected, predicted in zip(qids, gold, predictions, strict=True):
+        record = {
+            "run_id": base_record["run_id"],
+            "split": base_record["split"],
+            "mode": base_record["mode"],
+            "experiment": base_record["experiment"],
+            "eval_part": eval_part,
+            "qid": qid,
+            "gold_doc_id": expected,
+        }
+        for k in EVAL_KS:
+            record[f"hit@{k}"] = int(str(expected) in dedupe_topk(predicted, k))
+        records.append(record)
+    return records
+
+
+def _paired_comparison_summary(
+    query_hits: pd.DataFrame,
+    *,
+    experiment: str,
+    eval_part: str,
+    baseline: str,
+) -> dict[str, Any]:
+    metric = "hit@5"
+    part = query_hits[query_hits["eval_part"].eq(eval_part)]
+    current = part[part["experiment"].eq(experiment)]
+    base = part[part["experiment"].eq(baseline)]
+    if current.empty or base.empty:
+        return {}
+
+    keys = ["split", "eval_part", "qid"]
+    compared = current[keys + [metric]].merge(
+        base[keys + [metric]],
+        on=keys,
+        suffixes=("", "_baseline"),
+        how="inner",
+    )
+    if compared.empty:
+        return {}
+
+    hit = compared[metric].astype(int)
+    base_hit = compared[f"{metric}_baseline"].astype(int)
+    wins = int(((hit == 1) & (base_hit == 0)).sum())
+    losses = int(((hit == 0) & (base_hit == 1)).sum())
+    ties = int((hit == base_hit).sum())
+    n_compared = int(len(compared))
+    prefix = f"{eval_part}_recall@5"
+    return {
+        f"{prefix}_comparison_baseline": baseline,
+        f"{prefix}_delta_vs_baseline": float((hit - base_hit).mean()),
+        f"{prefix}_wins_vs_baseline": wins,
+        f"{prefix}_losses_vs_baseline": losses,
+        f"{prefix}_ties_vs_baseline": ties,
+        f"{prefix}_n_compared_vs_baseline": n_compared,
+    }
 
 
 def rank_queries(

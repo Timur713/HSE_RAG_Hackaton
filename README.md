@@ -58,7 +58,7 @@ python scripts/run_experiments.py --data-dir . --mode holdout --experiment rrf_b
 
 Основные метрики пишутся в `reports/metrics/*.jsonl`, `reports/folds_<run_id>.csv` и `reports/summary_latest.csv`.
 
-`folds_*` хранит raw-строки `fold × experiment × eval_part`: для `mode=cv` это `valid`, для `mode=holdout` это `holdout`, для `mode=train` это `train`. `summary_*` хранит одну строку на experiment: `mean/std` по split'ам для соответствующей eval-части. Для одиночного holdout std не считается. `recall@5` остается главной метрикой для выбора submission, остальные recall нужны для диагностики candidate generation и reranking depth.
+`folds_*` хранит raw-строки `fold × experiment × eval_part`: для `mode=cv` это `valid`, для `mode=holdout` это `holdout`, для `mode=train` это `train`. `query_hits_*` хранит per-query hit/miss для paired-сравнений. `summary_*` хранит одну строку на experiment: `mean/std/se` по split'ам, `micro` по объединенным query, а также `delta/wins/losses/ties` против `bm25_doc`, если baseline есть в прогоне. Для одиночного holdout std/se не считаются. `recall@5` остается главной метрикой для выбора submission, остальные recall нужны для диагностики candidate generation и reranking depth.
 
 ## Evidence supervision
 
