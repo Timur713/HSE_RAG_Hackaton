@@ -12,7 +12,7 @@ import pandas as pd
 from legal_hse.chunking import ChunkConfig, build_chunk_index
 from legal_hse.config import PathConfig
 from legal_hse.data import load_data
-from legal_hse.fusion import aggregate_chunk_results, dedupe_ranked_docs, rrf_fusion
+from legal_hse.fusion import aggregate_chunk_results, dedupe_ranked_docs, quota_union_fusion, rrf_fusion
 from legal_hse.features import add_field_aware_text
 from legal_hse.metrics import dedupe_topk, evaluate_predictions
 from legal_hse.retrievers.base import SearchResult
@@ -284,16 +284,370 @@ def default_experiments(*, include_optional: bool = False) -> list[ExperimentSpe
     return specs
 
 
+def recall_candidate_experiments(
+    *,
+    include_optional: bool = False,
+    include_bge_m3: bool = False,
+) -> list[ExperimentSpec]:
+    """Recall@20/50-oriented candidate-generation experiments.
+
+    These are intentionally separate from `default_experiments` so older
+    notebooks and reports keep their exact experiment suite. Pass the returned
+    specs to `run_suite(..., extra_experiments=...)`.
+    """
+
+    specs: list[ExperimentSpec] = []
+
+    for depth in (300, 600, 1000):
+        specs.append(
+            _bm25_chunk_spec(
+                name=f"bm25_legal_lemma_chunk_line_10_5_max_rd{depth}",
+                unit="line",
+                size=10,
+                overlap=5,
+                aggregation="max",
+                rank_depth=depth,
+                priority="P0",
+                description=f"Current legal line 10/5 chunk BM25 with deeper chunk rank_depth={depth}.",
+            )
+        )
+
+    chunk_views = [
+        ("line", 6, 3, "line_6_3"),
+        ("line", 8, 4, "line_8_4"),
+        ("line", 12, 6, "line_12_6"),
+        ("line", 16, 8, "line_16_8"),
+        ("char", 1200, 600, "char_1200_600"),
+        ("char", 1600, 800, "char_1600_800"),
+        ("char", 2000, 1000, "char_2000_1000"),
+        ("paragraph", 1, 0, "paragraph_1_0"),
+        ("paragraph", 2, 1, "paragraph_2_1"),
+    ]
+    aggregations = ("max", "top2_mean", "max_plus_second", "softmax_top3")
+    for unit, size, overlap, label in chunk_views:
+        for aggregation in aggregations:
+            specs.append(
+                _bm25_chunk_spec(
+                    name=f"bm25_legal_lemma_chunk_{label}_{_short_aggregation_name(aggregation)}_rd600",
+                    unit=unit,
+                    size=size,
+                    overlap=overlap,
+                    aggregation=aggregation,
+                    rank_depth=600,
+                    priority="P0" if unit == "line" and aggregation == "max" else "P1",
+                )
+            )
+
+    doc_grid = [(k1, b) for k1 in (1.2, 1.5, 1.8) for b in (0.5, 0.75, 0.9)]
+    chunk_grid = [(k1, b) for k1 in (0.9, 1.2, 1.5) for b in (0.2, 0.5, 0.75)]
+    for k1, b in doc_grid:
+        if (k1, b) == (1.5, 0.75):
+            continue
+        specs.append(
+            ExperimentSpec(
+                name=f"bm25_legal_lemma_doc_k1{_float_label(k1)}_b{_float_label(b)}",
+                kind="bm25_doc",
+                params={"config": _legal_bm25_config(k1=k1, b=b)},
+                priority="P1",
+                description=f"Legal-aware BM25 over full documents with k1={k1}, b={b}.",
+            )
+        )
+    for k1, b in chunk_grid:
+        if (k1, b) == (1.5, 0.75):
+            continue
+        specs.append(
+            _bm25_chunk_spec(
+                name=f"bm25_legal_lemma_chunk_line_10_5_k1{_float_label(k1)}_b{_float_label(b)}_rd600",
+                unit="line",
+                size=10,
+                overlap=5,
+                aggregation="max",
+                rank_depth=600,
+                k1=k1,
+                b=b,
+                priority="P1",
+            )
+        )
+
+    specs.extend(
+        [
+            ExperimentSpec(
+                name="rrf_sparse_deep_legal_lemma_char",
+                kind="rrf",
+                params={
+                    "members": [
+                        "bm25_legal_lemma_doc",
+                        "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                        "tfidf_char_doc_3_5",
+                    ],
+                    "rrf_k": 60,
+                    "rank_depth": 100,
+                },
+                priority="P0",
+                description="RRF with deeper legal line chunk BM25 and char TF-IDF.",
+            ),
+            ExperimentSpec(
+                name="rrf_sparse_multichunk_legal_char",
+                kind="rrf",
+                params={
+                    "members": [
+                        "bm25_legal_lemma_doc",
+                        "bm25_legal_lemma_chunk_line_6_3_max_rd600",
+                        "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                        "bm25_legal_lemma_chunk_line_16_8_max_rd600",
+                        "bm25_legal_lemma_chunk_char_1600_800_max_rd600",
+                        "bm25_legal_lemma_chunk_paragraph_2_1_max_rd600",
+                        "tfidf_char_doc_3_5",
+                    ],
+                    "rrf_k": 60,
+                    "rank_depth": 100,
+                },
+                priority="P0",
+                description="RRF across several sparse document and chunk views for broader candidate recall.",
+            ),
+            ExperimentSpec(
+                name="quota_sparse_legal_lemma_char_q5",
+                kind="quota_rrf",
+                params={
+                    "members": [
+                        "bm25_legal_lemma_doc",
+                        "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                        "tfidf_char_doc_3_5",
+                    ],
+                    "quota": 5,
+                    "rrf_k": 60,
+                    "rank_depth": 100,
+                    "member_rank_depth": 100,
+                },
+                priority="P0",
+                description="Quota/union fusion over the current strong sparse branches.",
+            ),
+            ExperimentSpec(
+                name="quota_sparse_legal_lemma_char_q10",
+                kind="quota_rrf",
+                params={
+                    "members": [
+                        "bm25_legal_lemma_doc",
+                        "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                        "tfidf_char_doc_3_5",
+                    ],
+                    "quota": 10,
+                    "rrf_k": 60,
+                    "rank_depth": 100,
+                    "member_rank_depth": 100,
+                },
+                priority="P0",
+                description="Wider quota/union fusion over the current strong sparse branches.",
+            ),
+            ExperimentSpec(
+                name="quota_sparse_multichunk_q8",
+                kind="quota_rrf",
+                params={
+                    "members": [
+                        "bm25_legal_lemma_doc",
+                        "bm25_legal_lemma_chunk_line_6_3_max_rd600",
+                        "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                        "bm25_legal_lemma_chunk_line_16_8_max_rd600",
+                        "bm25_legal_lemma_chunk_char_1600_800_max_rd600",
+                        "bm25_legal_lemma_chunk_paragraph_2_1_max_rd600",
+                        "tfidf_char_doc_3_5",
+                    ],
+                    "quota": 8,
+                    "rrf_k": 60,
+                    "rank_depth": 100,
+                    "member_rank_depth": 100,
+                },
+                priority="P0",
+                description="Quota/union fusion across several sparse chunk views.",
+            ),
+        ]
+    )
+
+    if include_optional:
+        specs.extend(
+            [
+                ExperimentSpec(
+                    name="dense_e5_chunk_line_10_5_rd600",
+                    kind="dense_chunk",
+                    params={
+                        "config": {"model_name": "intfloat/multilingual-e5-base", "batch_size": 32},
+                        "chunk": {"unit": "line", "size": 10, "overlap": 5},
+                        "aggregation": "max",
+                        "rank_depth": 600,
+                    },
+                    priority="P1",
+                    description="E5-base dense retrieval over line chunks for candidate recall.",
+                ),
+                ExperimentSpec(
+                    name="dense_e5_chunk_char_1600_800_rd600",
+                    kind="dense_chunk",
+                    params={
+                        "config": {"model_name": "intfloat/multilingual-e5-base", "batch_size": 32},
+                        "chunk": {"unit": "char", "size": 1600, "overlap": 800},
+                        "aggregation": "max",
+                        "rank_depth": 600,
+                    },
+                    priority="P1",
+                    description="E5-base dense retrieval over char chunks for candidate recall.",
+                ),
+                ExperimentSpec(
+                    name="rrf_sparse_e5_line",
+                    kind="rrf",
+                    params={
+                        "members": [
+                            "bm25_legal_lemma_doc",
+                            "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                            "tfidf_char_doc_3_5",
+                            "dense_e5_chunk_line_10_5_rd600",
+                        ],
+                        "rrf_k": 60,
+                        "rank_depth": 100,
+                    },
+                    priority="P1",
+                    description="Hybrid sparse + E5 dense RRF candidate generator.",
+                ),
+                ExperimentSpec(
+                    name="quota_sparse_e5_line_q8",
+                    kind="quota_rrf",
+                    params={
+                        "members": [
+                            "bm25_legal_lemma_doc",
+                            "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                            "tfidf_char_doc_3_5",
+                            "dense_e5_chunk_line_10_5_rd600",
+                        ],
+                        "quota": 8,
+                        "rrf_k": 60,
+                        "rank_depth": 100,
+                        "member_rank_depth": 100,
+                    },
+                    priority="P1",
+                    description="Quota/union hybrid sparse + E5 candidate generator.",
+                ),
+            ]
+        )
+        if include_bge_m3:
+            specs.extend(
+                [
+                    ExperimentSpec(
+                        name="dense_bge_m3_chunk_line_10_5_rd600",
+                        kind="dense_chunk",
+                        params={
+                            "config": {"model_name": "BAAI/bge-m3", "batch_size": 16},
+                            "chunk": {"unit": "line", "size": 10, "overlap": 5},
+                            "aggregation": "max",
+                            "rank_depth": 600,
+                        },
+                        priority="P2",
+                        description="BGE-M3 dense retrieval over line chunks.",
+                    ),
+                    ExperimentSpec(
+                        name="rrf_sparse_bge_m3_line",
+                        kind="rrf",
+                        params={
+                            "members": [
+                                "bm25_legal_lemma_doc",
+                                "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                                "tfidf_char_doc_3_5",
+                                "dense_bge_m3_chunk_line_10_5_rd600",
+                            ],
+                            "rrf_k": 60,
+                            "rank_depth": 100,
+                        },
+                        priority="P2",
+                        description="Hybrid sparse + BGE-M3 dense RRF candidate generator.",
+                    ),
+                ]
+            )
+
+    return _unique_specs(specs)
+
+
+def _legal_bm25_config(k1: float = 1.5, b: float = 0.75, *, add_bigrams: bool = False) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "k1": k1,
+        "b": b,
+        "lemmatize": True,
+        "preserve_legal_refs": True,
+        "legal_stop_words": True,
+        "min_len": 2,
+    }
+    if add_bigrams:
+        config["add_bigrams"] = True
+    return config
+
+
+def _bm25_chunk_spec(
+    *,
+    name: str,
+    unit: str,
+    size: int,
+    overlap: int,
+    aggregation: str = "max",
+    rank_depth: int = 600,
+    k1: float = 1.5,
+    b: float = 0.75,
+    priority: str = "P0",
+    description: str | None = None,
+) -> ExperimentSpec:
+    return ExperimentSpec(
+        name=name,
+        kind="bm25_chunk",
+        params={
+            "config": _legal_bm25_config(k1=k1, b=b),
+            "chunk": {"unit": unit, "size": size, "overlap": overlap},
+            "aggregation": aggregation,
+            "rank_depth": rank_depth,
+        },
+        priority=priority,
+        description=description
+        or f"Legal-aware BM25 over {unit} chunks {size}/{overlap}, {aggregation}, rank_depth={rank_depth}.",
+    )
+
+
+def _float_label(value: float) -> str:
+    return str(value).replace(".", "p")
+
+
+def _short_aggregation_name(aggregation: str) -> str:
+    return {
+        "max": "max",
+        "top2_mean": "top2",
+        "max_plus_second": "max2",
+        "softmax_top3": "softmax3",
+    }[aggregation]
+
+
+def _unique_specs(specs: list[ExperimentSpec]) -> list[ExperimentSpec]:
+    seen: set[str] = set()
+    result: list[ExperimentSpec] = []
+    for spec in specs:
+        if spec.name in seen:
+            continue
+        seen.add(spec.name)
+        result.append(spec)
+    return result
+
+
+def _merge_specs(base: list[ExperimentSpec], extra: list[ExperimentSpec] | None = None) -> list[ExperimentSpec]:
+    by_name: dict[str, ExperimentSpec] = {}
+    for spec in [*base, *(extra or [])]:
+        by_name.setdefault(spec.name, spec)
+    return list(by_name.values())
+
+
 def run_suite(
     *,
     data_dir: str | Path,
     output_dir: str | Path | None = None,
     experiment_names: list[str] | None = None,
+    extra_experiments: list[ExperimentSpec] | None = None,
     mode: str = "holdout",
     include_optional: bool = False,
     seed: int = 42,
     n_splits: int = 5,
     eval_depth: int = DEFAULT_EVAL_DEPTH,
+    eval_ks: tuple[int, ...] | None = None,
     run_id: str | None = None,
     comparison_baseline: str = DEFAULT_COMPARISON_BASELINE,
 ) -> pd.DataFrame:
@@ -304,8 +658,10 @@ def run_suite(
     output.mkdir(parents=True, exist_ok=True)
     metrics_dir = output / "metrics"
     metrics_dir.mkdir(parents=True, exist_ok=True)
+    eval_ks = tuple(eval_ks or EVAL_KS)
+    eval_depth = max(eval_depth, max(eval_ks))
 
-    all_specs = default_experiments(include_optional=include_optional)
+    all_specs = _merge_specs(default_experiments(include_optional=include_optional), extra_experiments)
     specs = all_specs
     if experiment_names:
         selected = set(experiment_names)
@@ -363,7 +719,7 @@ def run_suite(
                         "n_eval": len(frame),
                         "status": "ok",
                     }
-                    record.update(evaluate_predictions(gold, predictions, ks=EVAL_KS))
+                    record.update(evaluate_predictions(gold, predictions, ks=eval_ks))
                     record["duration_sec"] = (datetime.now(timezone.utc) - started).total_seconds()
                     records.append(record)
                     query_records.extend(
@@ -373,6 +729,7 @@ def run_suite(
                             qids=qids,
                             gold=gold,
                             predictions=predictions,
+                            eval_ks=eval_ks,
                         )
                     )
                     with metrics_path.open("a", encoding="utf-8") as fh:
@@ -393,7 +750,12 @@ def run_suite(
 
     raw = pd.DataFrame(records)
     query_hits = pd.DataFrame(query_records)
-    summary = aggregate_validation_records(raw, query_hits=query_hits, comparison_baseline=comparison_baseline)
+    summary = aggregate_validation_records(
+        raw,
+        query_hits=query_hits,
+        comparison_baseline=comparison_baseline,
+        metric_columns=[f"recall@{k}" for k in eval_ks],
+    )
     raw_path = output / f"folds_{run_id}.csv"
     query_hits_path = output / f"query_hits_{run_id}.csv"
     summary_path = output / f"summary_{run_id}.csv"
@@ -410,9 +772,11 @@ def aggregate_validation_records(
     *,
     query_hits: pd.DataFrame | None = None,
     comparison_baseline: str = DEFAULT_COMPARISON_BASELINE,
+    metric_columns: list[str] | None = None,
 ) -> pd.DataFrame:
     if raw.empty:
         return raw
+    metric_columns = metric_columns or [metric for metric in METRIC_COLUMNS if metric in raw.columns]
 
     rows: list[dict[str, Any]] = []
     for experiment, group in raw.groupby("experiment", sort=False):
@@ -435,7 +799,9 @@ def aggregate_validation_records(
                 continue
             row[f"{eval_part}_n_eval_mean"] = part["n_eval"].mean()
             row[f"{eval_part}_n_eval_total"] = part["n_eval"].sum()
-            for metric in METRIC_COLUMNS:
+            for metric in metric_columns:
+                if metric not in part.columns:
+                    continue
                 row[f"{eval_part}_{metric}_mean"] = part[metric].mean()
                 metric_std = part[metric].std(ddof=1) if len(part) > 1 else pd.NA
                 row[f"{eval_part}_{metric}_std"] = metric_std
@@ -468,6 +834,7 @@ def _query_hit_records(
     qids: list[str],
     gold: list[str],
     predictions: list[list[str]],
+    eval_ks: tuple[int, ...] = EVAL_KS,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for qid, expected, predicted in zip(qids, gold, predictions, strict=True):
@@ -480,7 +847,7 @@ def _query_hit_records(
             "qid": qid,
             "gold_doc_id": expected,
         }
-        for k in EVAL_KS:
+        for k in eval_ks:
             record[f"hit@{k}"] = int(str(expected) in dedupe_topk(predicted, k))
         records.append(record)
     return records
@@ -560,6 +927,30 @@ def rank_queries(
         cache[spec.name] = rankings
         return rankings
 
+    if spec.kind == "quota_rrf":
+        by_name = {item.name: item for item in all_specs}
+        member_names = spec.params["members"]
+        member_rank_depth = max(top_k, int(spec.params.get("member_rank_depth", spec.params.get("rank_depth", top_k))))
+        member_rankings = [
+            rank_queries(by_name[name], all_specs, documents, queries, top_k=member_rank_depth, cache=cache)
+            for name in member_names
+        ]
+        per_member_quota = spec.params.get("per_member_quota")
+        rankings = []
+        for query_rankings in zip(*member_rankings, strict=True):
+            rankings.append(
+                quota_union_fusion(
+                    [list(ranking) for ranking in query_rankings],
+                    quota=int(spec.params.get("quota", 8)),
+                    per_ranking_quota=per_member_quota,
+                    k=int(spec.params.get("rrf_k", 60)),
+                    top_k=top_k,
+                    source=spec.name,
+                )
+            )
+        cache[spec.name] = rankings
+        return rankings
+
     if spec.kind == "tfidf_doc":
         units = document_units(documents)
         retriever = TfidfRetriever(spec.name, TfidfConfig(**spec.params.get("config", {}))).fit(units)
@@ -605,18 +996,138 @@ def rank_queries(
     return rankings
 
 
+def run_recall_oracle_diagnostics(
+    *,
+    data_dir: str | Path,
+    branch_names: list[str] | None = None,
+    baseline_fusion_name: str = "rrf_sparse_legal_lemma_char",
+    mode: str = "cv",
+    include_optional: bool = False,
+    extra_experiments: list[ExperimentSpec] | None = None,
+    seed: int = 42,
+    n_splits: int = 5,
+    depth: int = 50,
+    eval_ks: tuple[int, ...] | None = None,
+) -> pd.DataFrame:
+    """Diagnose whether Recall@20/50 is limited by branches or fusion."""
+
+    eval_ks = tuple(eval_ks or EVAL_KS)
+    depth = max(depth, max(eval_ks))
+    branch_names = branch_names or [
+        "bm25_legal_lemma_doc",
+        "bm25_legal_lemma_chunk_line_10_5_max",
+        "tfidf_char_doc_3_5",
+    ]
+    paths = PathConfig.from_root(data_dir)
+    data = load_data(paths.root)
+    all_specs = _merge_specs(default_experiments(include_optional=include_optional), extra_experiments)
+    by_name = {spec.name: spec for spec in all_specs}
+    required = set(branch_names) | {baseline_fusion_name}
+    missing = sorted(required.difference(by_name))
+    if missing:
+        raise ValueError(f"Unknown diagnostic experiments: {missing}")
+
+    rows: list[dict[str, Any]] = []
+    for split, eval_frames in _make_eval_folds(data.train, mode=mode, seed=seed, n_splits=n_splits):
+        combined_eval = pd.concat(
+            [
+                frame.assign(_eval_part=eval_part, _eval_order=range(len(frame)))
+                for eval_part, frame in eval_frames
+            ],
+            ignore_index=True,
+        )
+        queries = combined_eval["question"].astype(str).tolist()
+        cache: dict[str, list[list[SearchResult]]] = {}
+        ranking_names = [*branch_names, baseline_fusion_name]
+        rankings_by_name = {
+            name: rank_queries(by_name[name], all_specs, data.documents, queries, top_k=depth, cache=cache)
+            for name in ranking_names
+        }
+
+        for eval_part, frame in eval_frames:
+            mask = combined_eval["_eval_part"].eq(eval_part).to_numpy()
+            idxs = [idx for idx, keep in enumerate(mask) if keep]
+            gold = frame["gold_doc_id"].astype(str).tolist()
+
+            for name in ranking_names:
+                predictions = [[item.doc_id for item in rankings_by_name[name][idx][:depth]] for idx in idxs]
+                record: dict[str, Any] = {
+                    "split": split.name,
+                    "eval_part": eval_part,
+                    "kind": "branch",
+                    "candidate": name,
+                    "n_eval": len(gold),
+                }
+                record.update(evaluate_predictions(gold, predictions, ks=eval_ks))
+                rows.append(record)
+
+            for k_eval in [k for k in eval_ks if k >= 20]:
+                union_hits = 0
+                baseline_misses_union_hits = 0
+                for expected, idx in zip(gold, idxs, strict=True):
+                    branch_hit = any(
+                        str(expected) in {item.doc_id for item in rankings_by_name[name][idx][:k_eval]}
+                        for name in branch_names
+                    )
+                    baseline_hit = str(expected) in [
+                        item.doc_id for item in rankings_by_name[baseline_fusion_name][idx][:k_eval]
+                    ]
+                    union_hits += int(branch_hit)
+                    baseline_misses_union_hits += int(branch_hit and not baseline_hit)
+                rows.append(
+                    {
+                        "split": split.name,
+                        "eval_part": eval_part,
+                        "kind": "oracle_union",
+                        "candidate": f"oracle_union_top{k_eval}",
+                        "n_eval": len(gold),
+                        f"recall@{k_eval}": union_hits / max(1, len(gold)),
+                        f"lost_by_{baseline_fusion_name}@{k_eval}": baseline_misses_union_hits,
+                    }
+                )
+
+    raw = pd.DataFrame(rows)
+    if raw.empty:
+        return raw
+    rows_out: list[dict[str, Any]] = []
+    metric_cols = [
+        col
+        for col in raw.columns
+        if col.startswith("recall@") or col.startswith("lost_by_")
+    ]
+    for (kind, candidate), group in raw.groupby(["kind", "candidate"], sort=False):
+        row: dict[str, Any] = {
+            "kind": kind,
+            "candidate": candidate,
+            "n_splits": group["split"].nunique(),
+            "n_eval_total": group["n_eval"].sum(),
+        }
+        for col in metric_cols:
+            values = group[col].dropna()
+            if values.empty:
+                continue
+            if col.startswith("lost_by_"):
+                row[f"{col}_total"] = int(values.sum())
+            else:
+                row[f"{col}_mean"] = values.mean()
+                row[f"{col}_micro"] = float((group.loc[values.index, col] * group.loc[values.index, "n_eval"]).sum() / group.loc[values.index, "n_eval"].sum())
+        rows_out.append(row)
+    return pd.DataFrame(rows_out)
+
+
 def create_submission(
     *,
     data_dir: str | Path,
     experiment_name: str,
     output_path: str | Path | None = None,
     include_optional: bool = False,
+    extra_experiments: list[ExperimentSpec] | None = None,
     top_k: int = 5,
 ) -> Path:
     paths = PathConfig.from_root(data_dir)
     paths.ensure_dirs()
     data = load_data(paths.root)
-    specs = default_experiments(include_optional=include_optional)
+    specs = _merge_specs(default_experiments(include_optional=include_optional), extra_experiments)
     by_name = {spec.name: spec for spec in specs}
     if experiment_name not in by_name:
         raise ValueError(f"Unknown experiment name: {experiment_name}")
