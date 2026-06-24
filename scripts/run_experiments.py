@@ -37,7 +37,19 @@ def main() -> None:
         n_splits=args.n_splits,
         eval_depth=args.eval_depth,
     )
-    cols = ["split", "experiment", "status", "recall@5", "recall@10", "recall@20", "recall@50"]
+    cols = [
+        "experiment",
+        "status",
+        "n_splits",
+        "train_recall@5_mean",
+        "train_recall@5_std",
+        "holdout_recall@5_mean",
+        "holdout_recall@5_std",
+        "holdout_recall@10_mean",
+        "holdout_recall@20_mean",
+        "holdout_recall@50_mean",
+    ]
+    cols = [col for col in cols if col in summary.columns]
     print(summary[cols].to_string(index=False))
     print(f"\nBest by mean recall@5: {select_best_experiment(summary)}")
 

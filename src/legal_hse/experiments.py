@@ -23,6 +23,7 @@ from legal_hse.submission import write_submission
 
 EVAL_KS = (5, 10, 20, 50)
 DEFAULT_EVAL_DEPTH = max(EVAL_KS)
+METRIC_COLUMNS = [f"recall@{k}" for k in EVAL_KS]
 
 
 @dataclass(frozen=True)
@@ -186,13 +187,22 @@ def run_suite(
     metrics_path = metrics_dir / f"{run_id}.jsonl"
 
     for split in _make_splits(data.train, mode=mode, seed=seed, n_splits=n_splits):
-        _, valid_df = _materialize_split(data.train, split)
-        queries = valid_df["question"].astype(str).tolist()
-        gold = valid_df["gold_doc_id"].astype(str).tolist()
+        train_df, valid_df = _materialize_split(data.train, split)
+        eval_frames = [("train", train_df)]
+        if mode != "train":
+            eval_frames.append(("holdout", valid_df))
+        combined_eval = pd.concat(
+            [
+                frame.assign(_eval_part=eval_part, _eval_order=range(len(frame)))
+                for eval_part, frame in eval_frames
+            ],
+            ignore_index=True,
+        )
+        queries = combined_eval["question"].astype(str).tolist()
         cache: dict[str, list[list[SearchResult]]] = {}
         for spec in specs:
             started = datetime.now(timezone.utc)
-            record = {
+            base_record = {
                 "run_id": run_id,
                 "timestamp_utc": started.isoformat(),
                 "split": split.name,
@@ -200,8 +210,6 @@ def run_suite(
                 "experiment": spec.name,
                 "priority": spec.priority,
                 "description": spec.description,
-                "n_eval": len(valid_df),
-                "status": "ok",
                 "params": _jsonable(spec.params),
             }
             try:
@@ -214,22 +222,76 @@ def run_suite(
                     top_k=ranking_depth,
                     cache=cache,
                 )
-                predictions = [[item.doc_id for item in ranking[:ranking_depth]] for ranking in rankings]
-                record.update(evaluate_predictions(gold, predictions, ks=EVAL_KS))
+                for eval_part, frame in eval_frames:
+                    mask = combined_eval["_eval_part"].eq(eval_part).to_numpy()
+                    part_rankings = [ranking for ranking, keep in zip(rankings, mask, strict=True) if keep]
+                    predictions = [[item.doc_id for item in ranking[:ranking_depth]] for ranking in part_rankings]
+                    gold = frame["gold_doc_id"].astype(str).tolist()
+                    record = {
+                        **base_record,
+                        "eval_part": eval_part,
+                        "n_eval": len(frame),
+                        "status": "ok",
+                    }
+                    record.update(evaluate_predictions(gold, predictions, ks=EVAL_KS))
+                    record["duration_sec"] = (datetime.now(timezone.utc) - started).total_seconds()
+                    records.append(record)
+                    with metrics_path.open("a", encoding="utf-8") as fh:
+                        fh.write(json.dumps(_jsonable(record), ensure_ascii=False) + "\n")
             except Exception as exc:  # noqa: BLE001 - experiment failures should be logged, not hide previous metrics.
-                record["status"] = "failed"
-                record["error"] = repr(exc)
-            record["duration_sec"] = (datetime.now(timezone.utc) - started).total_seconds()
-            records.append(record)
-            with metrics_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(_jsonable(record), ensure_ascii=False) + "\n")
+                for eval_part, frame in eval_frames:
+                    record = {
+                        **base_record,
+                        "eval_part": eval_part,
+                        "n_eval": len(frame),
+                        "status": "failed",
+                        "error": repr(exc),
+                        "duration_sec": (datetime.now(timezone.utc) - started).total_seconds(),
+                    }
+                    records.append(record)
+                    with metrics_path.open("a", encoding="utf-8") as fh:
+                        fh.write(json.dumps(_jsonable(record), ensure_ascii=False) + "\n")
 
-    summary = pd.DataFrame(records)
+    raw = pd.DataFrame(records)
+    summary = aggregate_validation_records(raw)
+    raw_path = output / f"folds_{run_id}.csv"
     summary_path = output / f"summary_{run_id}.csv"
     latest_path = output / "summary_latest.csv"
+    raw.to_csv(raw_path, index=False)
     summary.to_csv(summary_path, index=False)
     summary.to_csv(latest_path, index=False)
     return summary
+
+
+def aggregate_validation_records(raw: pd.DataFrame) -> pd.DataFrame:
+    if raw.empty:
+        return raw
+
+    rows: list[dict[str, Any]] = []
+    for experiment, group in raw.groupby("experiment", sort=False):
+        first = group.iloc[0]
+        ok_group = group[group["status"].eq("ok")]
+        row: dict[str, Any] = {
+            "run_id": first.get("run_id"),
+            "mode": first.get("mode"),
+            "experiment": experiment,
+            "priority": first.get("priority"),
+            "description": first.get("description"),
+            "status": "failed" if group["status"].ne("ok").any() else "ok",
+            "n_splits": group["split"].nunique(),
+            "params": first.get("params"),
+            "duration_sec": group["duration_sec"].max() if "duration_sec" in group else None,
+        }
+        for eval_part in ["train", "holdout"]:
+            part = ok_group[ok_group["eval_part"].eq(eval_part)]
+            if part.empty:
+                continue
+            row[f"{eval_part}_n_eval_mean"] = part["n_eval"].mean()
+            for metric in METRIC_COLUMNS:
+                row[f"{eval_part}_{metric}_mean"] = part[metric].mean()
+                row[f"{eval_part}_{metric}_std"] = part[metric].std(ddof=0)
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def rank_queries(
@@ -344,12 +406,16 @@ def create_submission(
     )
 
 
-def select_best_experiment(summary: pd.DataFrame, *, metric: str = "recall@5") -> str:
+def select_best_experiment(summary: pd.DataFrame, *, metric: str = "holdout_recall@5_mean") -> str:
     ok = summary[summary["status"].eq("ok")].copy()
     if ok.empty:
         raise ValueError("No successful experiments in summary")
-    grouped = ok.groupby("experiment", as_index=False)[metric].mean()
-    return str(grouped.sort_values(metric, ascending=False).iloc[0]["experiment"])
+    if metric not in ok.columns:
+        fallback = "train_recall@5_mean"
+        if fallback not in ok.columns:
+            raise ValueError(f"Metric column not found in summary: {metric}")
+        metric = fallback
+    return str(ok.sort_values(metric, ascending=False).iloc[0]["experiment"])
 
 
 def document_units(documents: pd.DataFrame) -> pd.DataFrame:

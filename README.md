@@ -54,7 +54,9 @@ python scripts/run_experiments.py --data-dir . --include-optional --experiment d
 python scripts/run_experiments.py --data-dir . --mode cv
 ```
 
-Основные метрики пишутся в `reports/metrics/*.jsonl` и `reports/summary_latest.csv`: `recall@5`, `recall@10`, `recall@20`, `recall@50`, время запуска, параметры и статус. `recall@5` остается главной метрикой для выбора submission, остальные recall нужны для диагностики candidate generation и reranking depth.
+Основные метрики пишутся в `reports/metrics/*.jsonl`, `reports/folds_<run_id>.csv` и `reports/summary_latest.csv`.
+
+`folds_*` хранит raw-строки `fold × experiment × eval_part`, где `eval_part` равен `train` или `holdout`. `summary_*` хранит одну строку на experiment: `mean/std` по split'ам отдельно для train и holdout. `recall@5` остается главной метрикой для выбора submission, остальные recall нужны для диагностики candidate generation и reranking depth.
 
 ## Evidence supervision
 
