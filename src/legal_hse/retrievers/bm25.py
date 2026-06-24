@@ -18,6 +18,9 @@ class BM25Config:
     min_len: int = 3
     stop_words: bool = True
     lemmatize: bool = False
+    preserve_legal_refs: bool = False
+    legal_stop_words: bool = False
+    add_bigrams: bool = False
 
 
 class BM25Retriever:
@@ -48,6 +51,9 @@ class BM25Retriever:
                 min_len=self.config.min_len,
                 stop_words=self.config.stop_words,
                 lemmatize=self.config.lemmatize,
+                preserve_legal_refs=self.config.preserve_legal_refs,
+                legal_stop_words=self.config.legal_stop_words,
+                add_bigrams=self.config.add_bigrams,
             )
             counts = Counter(tokens)
             token_counts.append(counts)
@@ -80,6 +86,9 @@ class BM25Retriever:
                 min_len=self.config.min_len,
                 stop_words=self.config.stop_words,
                 lemmatize=self.config.lemmatize,
+                preserve_legal_refs=self.config.preserve_legal_refs,
+                legal_stop_words=self.config.legal_stop_words,
+                add_bigrams=self.config.add_bigrams,
             )
         )
         if query_terms:

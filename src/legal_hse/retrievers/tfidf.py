@@ -17,8 +17,12 @@ class TfidfConfig:
     ngram_range: tuple[int, int] = (1, 1)
     min_df: int | float = 1
     max_df: int | float = 1.0
+    min_len: int = 3
     lemmatize: bool = False
     stop_words: bool = True
+    preserve_legal_refs: bool = False
+    legal_stop_words: bool = False
+    add_bigrams: bool = False
 
 
 class TfidfRetriever:
@@ -39,8 +43,12 @@ class TfidfRetriever:
             self.vectorizer = TfidfVectorizer(
                 tokenizer=lambda text: lexical_tokenize(
                     text,
+                    min_len=self.config.min_len,
                     stop_words=self.config.stop_words,
                     lemmatize=self.config.lemmatize,
+                    preserve_legal_refs=self.config.preserve_legal_refs,
+                    legal_stop_words=self.config.legal_stop_words,
+                    add_bigrams=self.config.add_bigrams,
                 ),
                 lowercase=False,
                 token_pattern=None,

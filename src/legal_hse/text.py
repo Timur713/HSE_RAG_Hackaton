@@ -5,6 +5,45 @@ from functools import lru_cache
 from typing import Iterable
 
 TOKEN_RE = re.compile(r"[а-яёa-z0-9]+", re.IGNORECASE)
+LEGAL_REF_RE = re.compile(
+    r"""
+    (?:
+        \bст\.?\s*\d+(?:[.\-]\d+)*\b
+        |
+        \bп\.?\s*\d+(?:[.\-]\d+)*\b
+        |
+        \bч\.?\s*\d+(?:[.\-]\d+)*\b
+        |
+        \b\d+(?:[.\-]\d+)*\s*[- ]?\s*фз\b
+        |
+        \b\d+(?:[.\-]\d+)+\b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+LEGAL_SHORT_TOKENS = {
+    "гк",
+    "гпк",
+    "кас",
+    "нк",
+    "опс",
+    "пфр",
+    "рф",
+    "сз",
+    "тк",
+    "ук",
+    "фз",
+    "цб",
+}
+
+LEGAL_NOISE_STOP = {
+    "адрес",
+    "дата",
+    "тел",
+    "телефон",
+    "фио",
+}
 
 RU_STOP = {
     "а",
@@ -92,19 +131,70 @@ def lexical_tokenize(
     min_len: int = 3,
     stop_words: bool = True,
     lemmatize: bool = False,
+    preserve_legal_refs: bool = False,
+    legal_stop_words: bool = False,
+    add_bigrams: bool = False,
 ) -> list[str]:
-    tokens = [m.group(0).lower().replace("ё", "е") for m in TOKEN_RE.finditer(str(text))]
+    normalized = normalize_text(str(text))
+    tokens = [m.group(0).lower().replace("ё", "е") for m in TOKEN_RE.finditer(normalized)]
+    if preserve_legal_refs:
+        tokens.extend(_legal_ref_tokens(normalized))
     if min_len > 1:
-        tokens = [token for token in tokens if len(token) >= min_len]
+        tokens = [
+            token
+            for token in tokens
+            if len(token) >= min_len or token in LEGAL_SHORT_TOKENS or _is_structured_token(token)
+        ]
     if stop_words:
         tokens = [token for token in tokens if token not in RU_STOP]
     if lemmatize:
-        tokens = [lemmatize_token(token) for token in tokens]
+        tokens = [_safe_lemmatize_token(token) for token in tokens]
+    if legal_stop_words:
+        tokens = [token for token in tokens if token not in LEGAL_NOISE_STOP]
+    if add_bigrams:
+        tokens = tokens + _adjacent_bigrams(tokens)
     return tokens
 
 
 def detokenize(tokens: Iterable[str]) -> str:
     return " ".join(tokens)
+
+
+def _legal_ref_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for match in LEGAL_REF_RE.finditer(text):
+        token = re.sub(r"\s+", "", match.group(0).lower().replace("ё", "е"))
+        token = token.replace("ст.", "ст_").replace("п.", "п_").replace("ч.", "ч_")
+        token = token.replace("ст", "ст_", 1) if token.startswith("ст") and not token.startswith("ст_") else token
+        token = token.replace("п", "п_", 1) if token.startswith("п") and not token.startswith("п_") else token
+        token = token.replace("ч", "ч_", 1) if token.startswith("ч") and not token.startswith("ч_") else token
+        token = token.replace("-фз", "_фз")
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _is_structured_token(token: str) -> bool:
+    return any(char.isdigit() for char in token) or "_" in token or "." in token or "-" in token
+
+
+def _safe_lemmatize_token(token: str) -> str:
+    if token in LEGAL_SHORT_TOKENS or _is_structured_token(token):
+        return token
+    return lemmatize_token(token)
+
+
+def _adjacent_bigrams(tokens: list[str]) -> list[str]:
+    bigrams: list[str] = []
+    for left, right in zip(tokens, tokens[1:], strict=False):
+        if _is_structured_token(left) or _is_structured_token(right):
+            continue
+        if left in RU_STOP or right in RU_STOP:
+            continue
+        if left in LEGAL_NOISE_STOP or right in LEGAL_NOISE_STOP:
+            continue
+        bigrams.append(f"{left}__{right}")
+    return bigrams
 
 
 @lru_cache(maxsize=100_000)

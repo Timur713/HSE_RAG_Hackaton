@@ -36,6 +36,14 @@ class ExperimentSpec:
 
 
 def default_experiments(*, include_optional: bool = False) -> list[ExperimentSpec]:
+    lemma_config = {"lemmatize": True, "legal_stop_words": True}
+    legal_lemma_config = {
+        "lemmatize": True,
+        "preserve_legal_refs": True,
+        "legal_stop_words": True,
+        "min_len": 2,
+    }
+    legal_phrase_config = {**legal_lemma_config, "add_bigrams": True}
     specs = [
         ExperimentSpec(
             name="tfidf_word_doc",
@@ -52,6 +60,20 @@ def default_experiments(*, include_optional: bool = False) -> list[ExperimentSpe
             description="Character n-gram TF-IDF control for Russian morphology and typos.",
         ),
         ExperimentSpec(
+            name="tfidf_word_lemma_doc",
+            kind="tfidf_doc",
+            params={"config": {"analyzer": "word", "ngram_range": (1, 1), **lemma_config}},
+            priority="P1",
+            description="Word TF-IDF over full documents with pymorphy lemmatization and anonymization-token cleanup.",
+        ),
+        ExperimentSpec(
+            name="tfidf_word_legal_lemma_doc",
+            kind="tfidf_doc",
+            params={"config": {"analyzer": "word", "ngram_range": (1, 1), **legal_lemma_config}},
+            priority="P1",
+            description="Word TF-IDF with Russian lemmatization plus legal references and short legal abbreviations.",
+        ),
+        ExperimentSpec(
             name="bm25_doc",
             kind="bm25_doc",
             params={"config": {"k1": 1.5, "b": 0.75}},
@@ -59,11 +81,39 @@ def default_experiments(*, include_optional: bool = False) -> list[ExperimentSpe
             description="BM25 over full documents.",
         ),
         ExperimentSpec(
+            name="bm25_lemma_doc",
+            kind="bm25_doc",
+            params={"config": {"k1": 1.5, "b": 0.75, **lemma_config}},
+            priority="P0",
+            description="BM25 over full documents with pymorphy lemmatization and anonymization-token cleanup.",
+        ),
+        ExperimentSpec(
+            name="bm25_legal_lemma_doc",
+            kind="bm25_doc",
+            params={"config": {"k1": 1.5, "b": 0.75, **legal_lemma_config}},
+            priority="P0",
+            description="BM25 over full documents with legal-aware tokenization, short-code preservation, and lemmatization.",
+        ),
+        ExperimentSpec(
+            name="bm25_legal_phrase_doc",
+            kind="bm25_doc",
+            params={"config": {"k1": 1.5, "b": 0.75, **legal_phrase_config}},
+            priority="P1",
+            description="BM25 over full documents with legal-aware lemmas and adjacent lemma bigrams for stable legal phrases.",
+        ),
+        ExperimentSpec(
             name="bm25_field_aware_doc",
             kind="bm25_field_doc",
             params={"config": {"k1": 1.5, "b": 0.75}},
             priority="P1",
             description="BM25 over full documents enriched with extracted structural legal fields.",
+        ),
+        ExperimentSpec(
+            name="bm25_legal_lemma_field_doc",
+            kind="bm25_field_doc",
+            params={"config": {"k1": 1.5, "b": 0.75, **legal_lemma_config}},
+            priority="P1",
+            description="Field-aware BM25 with legal-aware lemmatization.",
         ),
         ExperimentSpec(
             name="bm25_chunk_line_10_5_max",
@@ -76,6 +126,30 @@ def default_experiments(*, include_optional: bool = False) -> list[ExperimentSpe
             },
             priority="P0",
             description="BM25 over line-window chunks with max chunk-to-doc aggregation.",
+        ),
+        ExperimentSpec(
+            name="bm25_legal_lemma_chunk_line_10_5_max",
+            kind="bm25_chunk",
+            params={
+                "config": {"k1": 1.5, "b": 0.75, **legal_lemma_config},
+                "chunk": {"unit": "line", "size": 10, "overlap": 5},
+                "aggregation": "max",
+                "rank_depth": 120,
+            },
+            priority="P0",
+            description="Line-window BM25 chunks with legal-aware lemmatization and max aggregation.",
+        ),
+        ExperimentSpec(
+            name="bm25_legal_phrase_chunk_line_10_5_max",
+            kind="bm25_chunk",
+            params={
+                "config": {"k1": 1.5, "b": 0.75, **legal_phrase_config},
+                "chunk": {"unit": "line", "size": 10, "overlap": 5},
+                "aggregation": "max",
+                "rank_depth": 120,
+            },
+            priority="P1",
+            description="Line-window BM25 chunks with legal lemmas and adjacent lemma bigrams.",
         ),
         ExperimentSpec(
             name="bm25_chunk_line_8_4_top2",
@@ -101,6 +175,28 @@ def default_experiments(*, include_optional: bool = False) -> list[ExperimentSpe
             description="RRF fusion of document BM25 and chunk BM25.",
         ),
         ExperimentSpec(
+            name="rrf_legal_lemma_doc_chunk",
+            kind="rrf",
+            params={
+                "members": ["bm25_legal_lemma_doc", "bm25_legal_lemma_chunk_line_10_5_max"],
+                "rrf_k": 60,
+                "rank_depth": 100,
+            },
+            priority="P0",
+            description="RRF fusion of legal-aware lemmatized full-document and chunk BM25.",
+        ),
+        ExperimentSpec(
+            name="rrf_legal_phrase_doc_chunk",
+            kind="rrf",
+            params={
+                "members": ["bm25_legal_phrase_doc", "bm25_legal_phrase_chunk_line_10_5_max"],
+                "rrf_k": 60,
+                "rank_depth": 100,
+            },
+            priority="P1",
+            description="RRF fusion of legal-aware phrase BM25 over documents and chunks.",
+        ),
+        ExperimentSpec(
             name="rrf_sparse_doc_chunk_char",
             kind="rrf",
             params={
@@ -110,6 +206,37 @@ def default_experiments(*, include_optional: bool = False) -> list[ExperimentSpe
             },
             priority="P1",
             description="Sparse fusion: BM25 full-doc + BM25 chunks + char TF-IDF.",
+        ),
+        ExperimentSpec(
+            name="rrf_sparse_legal_lemma_char",
+            kind="rrf",
+            params={
+                "members": [
+                    "bm25_legal_lemma_doc",
+                    "bm25_legal_lemma_chunk_line_10_5_max",
+                    "tfidf_char_doc_3_5",
+                ],
+                "rrf_k": 60,
+                "rank_depth": 100,
+            },
+            priority="P0",
+            description="Sparse fusion: legal-aware lemmatized BM25 doc/chunk plus char TF-IDF.",
+        ),
+        ExperimentSpec(
+            name="rrf_sparse_legal_lemma_word_char",
+            kind="rrf",
+            params={
+                "members": [
+                    "bm25_legal_lemma_doc",
+                    "bm25_legal_lemma_chunk_line_10_5_max",
+                    "tfidf_word_legal_lemma_doc",
+                    "tfidf_char_doc_3_5",
+                ],
+                "rrf_k": 60,
+                "rank_depth": 100,
+            },
+            priority="P1",
+            description="Sparse fusion with legal-aware BM25, legal-aware word TF-IDF, and char TF-IDF.",
         ),
         ExperimentSpec(
             name="rrf_sparse_doc_chunk_char_field",
