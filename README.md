@@ -54,7 +54,7 @@ python scripts/run_experiments.py --data-dir . --include-optional --experiment d
 python scripts/run_experiments.py --data-dir . --mode cv
 ```
 
-Основные метрики пишутся в `reports/metrics/*.jsonl` и `reports/summary_latest.csv`: `recall@1`, `recall@5`, `recall@10`, `mrr@10`, время запуска, параметры и статус.
+Основные метрики пишутся в `reports/metrics/*.jsonl` и `reports/summary_latest.csv`: `recall@5`, `recall@10`, `recall@20`, `recall@50`, время запуска, параметры и статус. `recall@5` остается главной метрикой для выбора submission, остальные recall нужны для диагностики candidate generation и reranking depth.
 
 ## Evidence supervision
 

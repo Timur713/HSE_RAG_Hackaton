@@ -14,7 +14,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-optional", action="store_true", help="Include dense optional experiments.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n-splits", type=int, default=5)
-    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument(
+        "--eval-depth",
+        "--top-k",
+        dest="eval_depth",
+        type=int,
+        default=50,
+        help="How many candidates to keep for recall metrics. Must be at least 50 for recall@50.",
+    )
     return parser.parse_args()
 
 
@@ -28,9 +35,10 @@ def main() -> None:
         include_optional=args.include_optional,
         seed=args.seed,
         n_splits=args.n_splits,
-        top_k=args.top_k,
+        eval_depth=args.eval_depth,
     )
-    print(summary[["split", "experiment", "status", "recall@1", "recall@5", "mrr@10"]].to_string(index=False))
+    cols = ["split", "experiment", "status", "recall@5", "recall@10", "recall@20", "recall@50"]
+    print(summary[cols].to_string(index=False))
     print(f"\nBest by mean recall@5: {select_best_experiment(summary)}")
 
 

@@ -29,30 +29,15 @@ def recall_at_k(gold: Sequence[str], predictions: Sequence[Sequence[str]], k: in
     return hits / len(gold)
 
 
-def mrr_at_k(gold: Sequence[str], predictions: Sequence[Sequence[str]], k: int = 10) -> float:
-    if len(gold) != len(predictions):
-        raise ValueError("gold and predictions must have the same length")
-    if not gold:
-        return 0.0
-    score = 0.0
-    for expected, predicted in zip(gold, predictions, strict=True):
-        for rank, doc_id in enumerate(dedupe_topk(predicted, k), start=1):
-            if str(expected) == doc_id:
-                score += 1.0 / rank
-                break
-    return score / len(gold)
-
-
 def evaluate_predictions(
     gold: Sequence[str],
     predictions: Sequence[Sequence[str]],
     *,
-    ks: tuple[int, ...] = (1, 5, 10),
+    ks: tuple[int, ...] = (5, 10, 20, 50),
 ) -> dict[str, float]:
     metrics: dict[str, float] = {}
     for k in ks:
         metrics[f"recall@{k}"] = recall_at_k(gold, predictions, k)
-    metrics["mrr@10"] = mrr_at_k(gold, predictions, 10)
     return metrics
 
 

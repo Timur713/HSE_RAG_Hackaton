@@ -10,7 +10,8 @@ def test_recall_at_k_dedupes_and_truncates():
 
 def test_evaluate_predictions_has_expected_keys():
     metrics = evaluate_predictions(["d1"], [["d1"]])
-    assert metrics["recall@1"] == 1.0
     assert metrics["recall@5"] == 1.0
     assert metrics["recall@10"] == 1.0
-    assert metrics["mrr@10"] == 1.0
+    assert metrics["recall@20"] == 1.0
+    assert metrics["recall@50"] == 1.0
+    assert set(metrics) == {"recall@5", "recall@10", "recall@20", "recall@50"}

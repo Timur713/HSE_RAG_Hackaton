@@ -21,6 +21,9 @@ from legal_hse.retrievers.tfidf import TfidfConfig, TfidfRetriever
 from legal_hse.splits import Split, make_group_holdout, make_group_kfold
 from legal_hse.submission import write_submission
 
+EVAL_KS = (5, 10, 20, 50)
+DEFAULT_EVAL_DEPTH = max(EVAL_KS)
+
 
 @dataclass(frozen=True)
 class ExperimentSpec:
@@ -159,7 +162,7 @@ def run_suite(
     include_optional: bool = False,
     seed: int = 42,
     n_splits: int = 5,
-    top_k: int = 5,
+    eval_depth: int = DEFAULT_EVAL_DEPTH,
     run_id: str | None = None,
 ) -> pd.DataFrame:
     paths = PathConfig.from_root(data_dir)
@@ -202,16 +205,17 @@ def run_suite(
                 "params": _jsonable(spec.params),
             }
             try:
+                ranking_depth = max(eval_depth, int(spec.params.get("rank_depth", DEFAULT_EVAL_DEPTH)))
                 rankings = rank_queries(
                     spec,
                     specs,
                     data.documents,
                     queries,
-                    top_k=max(top_k, int(spec.params.get("rank_depth", 100))),
+                    top_k=ranking_depth,
                     cache=cache,
                 )
-                predictions = [[item.doc_id for item in ranking[:top_k]] for ranking in rankings]
-                record.update(evaluate_predictions(gold, predictions, ks=(1, 5, 10)))
+                predictions = [[item.doc_id for item in ranking[:ranking_depth]] for ranking in rankings]
+                record.update(evaluate_predictions(gold, predictions, ks=EVAL_KS))
             except Exception as exc:  # noqa: BLE001 - experiment failures should be logged, not hide previous metrics.
                 record["status"] = "failed"
                 record["error"] = repr(exc)
