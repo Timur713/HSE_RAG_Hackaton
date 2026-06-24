@@ -24,6 +24,7 @@ from legal_hse.submission import write_submission
 EVAL_KS = (5, 10, 20, 50)
 DEFAULT_EVAL_DEPTH = max(EVAL_KS)
 METRIC_COLUMNS = [f"recall@{k}" for k in EVAL_KS]
+EVAL_PART_ORDER = ("train", "valid", "holdout")
 
 
 @dataclass(frozen=True)
@@ -313,11 +314,7 @@ def run_suite(
     records: list[dict[str, Any]] = []
     metrics_path = metrics_dir / f"{run_id}.jsonl"
 
-    for split in _make_splits(data.train, mode=mode, seed=seed, n_splits=n_splits):
-        train_df, valid_df = _materialize_split(data.train, split)
-        eval_frames = [("train", train_df)]
-        if mode != "train":
-            eval_frames.append(("holdout", valid_df))
+    for split, eval_frames in _make_eval_folds(data.train, mode=mode, seed=seed, n_splits=n_splits):
         combined_eval = pd.concat(
             [
                 frame.assign(_eval_part=eval_part, _eval_order=range(len(frame)))
@@ -409,14 +406,14 @@ def aggregate_validation_records(raw: pd.DataFrame) -> pd.DataFrame:
             "params": first.get("params"),
             "duration_sec": group["duration_sec"].max() if "duration_sec" in group else None,
         }
-        for eval_part in ["train", "holdout"]:
+        for eval_part in EVAL_PART_ORDER:
             part = ok_group[ok_group["eval_part"].eq(eval_part)]
             if part.empty:
                 continue
             row[f"{eval_part}_n_eval_mean"] = part["n_eval"].mean()
             for metric in METRIC_COLUMNS:
                 row[f"{eval_part}_{metric}_mean"] = part[metric].mean()
-                row[f"{eval_part}_{metric}_std"] = part[metric].std(ddof=0)
+                row[f"{eval_part}_{metric}_std"] = part[metric].std(ddof=1) if len(part) > 1 else pd.NA
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -533,16 +530,21 @@ def create_submission(
     )
 
 
-def select_best_experiment(summary: pd.DataFrame, *, metric: str = "holdout_recall@5_mean") -> str:
+def select_best_experiment(summary: pd.DataFrame, *, metric: str | None = None) -> str:
     ok = summary[summary["status"].eq("ok")].copy()
     if ok.empty:
         raise ValueError("No successful experiments in summary")
+    metric = metric or _default_selection_metric(ok)
     if metric not in ok.columns:
-        fallback = "train_recall@5_mean"
-        if fallback not in ok.columns:
-            raise ValueError(f"Metric column not found in summary: {metric}")
-        metric = fallback
+        raise ValueError(f"Metric column not found in summary: {metric}")
     return str(ok.sort_values(metric, ascending=False).iloc[0]["experiment"])
+
+
+def _default_selection_metric(summary: pd.DataFrame) -> str:
+    for metric in ("holdout_recall@5_mean", "valid_recall@5_mean", "train_recall@5_mean"):
+        if metric in summary.columns:
+            return metric
+    raise ValueError("No recall@5 metric found in summary")
 
 
 def document_units(documents: pd.DataFrame) -> pd.DataFrame:
@@ -560,14 +562,28 @@ def chunk_units(documents: pd.DataFrame, config: ChunkConfig) -> pd.DataFrame:
     return chunks.rename(columns={"chunk_id": "unit_id"})[["unit_id", "doc_id", "text"]]
 
 
-def _make_splits(train: pd.DataFrame, *, mode: str, seed: int, n_splits: int) -> list[Split]:
+def _make_eval_folds(
+    train: pd.DataFrame,
+    *,
+    mode: str,
+    seed: int,
+    n_splits: int,
+) -> list[tuple[Split, list[tuple[str, pd.DataFrame]]]]:
     if mode == "holdout":
-        return [make_group_holdout(train, seed=seed)]
+        split = make_group_holdout(train, seed=seed)
+        _, holdout_df = _materialize_split(train, split)
+        return [(split, [("holdout", holdout_df)])]
     if mode == "cv":
-        return make_group_kfold(train, n_splits=n_splits)
+        outer_split = make_group_holdout(train, seed=seed)
+        cv_pool = train.iloc[outer_split.train_idx].reset_index(drop=True)
+        folds: list[tuple[Split, list[tuple[str, pd.DataFrame]]]] = []
+        for split in make_group_kfold(cv_pool, n_splits=n_splits):
+            _, valid_df = _materialize_split(cv_pool, split)
+            folds.append((split, [("valid", valid_df)]))
+        return folds
     if mode == "train":
         idx = list(range(len(train)))
-        return [Split("train_all", idx, idx)]
+        return [(Split("train_all", idx, idx), [("train", train.reset_index(drop=True))])]
     raise ValueError("mode must be one of: holdout, cv, train")
 
 

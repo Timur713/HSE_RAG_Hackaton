@@ -49,14 +49,16 @@ python scripts/run_experiments.py --data-dir . --include-optional --experiment d
 ## Валидация
 
 Для model selection используйте grouped split по `gold_doc_id`, чтобы не завышать качество вопросами про уже знакомые документы.
+Процедура соответствует `deep-research-report.md`: `cv` сначала откладывает frozen holdout и гоняет GroupKFold только на оставшемся train-pool; `holdout` отдельно оценивает выбранные конфигурации на той же frozen holdout-части.
 
 ```bash
 python scripts/run_experiments.py --data-dir . --mode cv
+python scripts/run_experiments.py --data-dir . --mode holdout --experiment rrf_bm25_doc_chunk
 ```
 
 Основные метрики пишутся в `reports/metrics/*.jsonl`, `reports/folds_<run_id>.csv` и `reports/summary_latest.csv`.
 
-`folds_*` хранит raw-строки `fold × experiment × eval_part`, где `eval_part` равен `train` или `holdout`. `summary_*` хранит одну строку на experiment: `mean/std` по split'ам отдельно для train и holdout. `recall@5` остается главной метрикой для выбора submission, остальные recall нужны для диагностики candidate generation и reranking depth.
+`folds_*` хранит raw-строки `fold × experiment × eval_part`: для `mode=cv` это `valid`, для `mode=holdout` это `holdout`, для `mode=train` это `train`. `summary_*` хранит одну строку на experiment: `mean/std` по split'ам для соответствующей eval-части. Для одиночного holdout std не считается. `recall@5` остается главной метрикой для выбора submission, остальные recall нужны для диагностики candidate generation и reranking depth.
 
 ## Evidence supervision
 
