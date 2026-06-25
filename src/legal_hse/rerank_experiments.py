@@ -37,15 +37,15 @@ DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 
 @dataclass(frozen=True)
 class RerankSuiteConfig:
-    mode: str = "cv"
+    mode: str = "holdout"
     seed: int = 42
     n_splits: int = 5
     eval_ks: tuple[int, ...] = (5, 10, 20)
     candidate_depth: int = 100
-    depths: tuple[int, ...] = (20, 50, 100)
-    chunks_per_doc: tuple[int, ...] = (1, 2)
-    chunk_aggs: tuple[str, ...] = ("max", "top2_mean")
-    score_modes: tuple[str, ...] = ("ce", "ce_plus_candidate")
+    depths: tuple[int, ...] = (20,)
+    chunks_per_doc: tuple[int, ...] = (2,)
+    chunk_aggs: tuple[str, ...] = ("top2_mean",)
+    score_modes: tuple[str, ...] = ("ce_plus_candidate",)
     model_names: tuple[str, ...] = (DEFAULT_RERANK_MODEL,)
     batch_size: int = 16
     max_length: int = 1024
@@ -53,7 +53,7 @@ class RerankSuiteConfig:
     chunk_search_depth: int = 2500
     pair_char_limit: int = 3500
     fallback_doc_chars: int = 2500
-    create_submission: bool = True
+    create_submission: bool = False
     enable_e5_candidates: bool = False
     enable_bge_m3: bool = False
     candidate_experiments: tuple[str, ...] | None = None
@@ -95,15 +95,15 @@ def config_from_globals(namespace: Mapping[str, Any]) -> RerankSuiteConfig:
     """
 
     return RerankSuiteConfig(
-        mode=str(namespace.get("RERANK_MODE", "cv")),
+        mode=str(namespace.get("RERANK_MODE", "holdout")),
         seed=int(namespace.get("RERANK_SEED", 42)),
         n_splits=int(namespace.get("RERANK_N_SPLITS", 5)),
         eval_ks=tuple(namespace.get("RERANK_EVAL_KS", (5, 10, 20))),
         candidate_depth=int(namespace.get("RERANK_CANDIDATE_DEPTH", 100)),
-        depths=tuple(namespace.get("RERANK_DEPTHS", (20, 50, 100))),
-        chunks_per_doc=tuple(namespace.get("RERANK_CHUNKS_PER_DOC", (1, 2))),
-        chunk_aggs=tuple(namespace.get("RERANK_CHUNK_AGGS", ("max", "top2_mean"))),
-        score_modes=tuple(namespace.get("RERANK_SCORE_MODES", ("ce", "ce_plus_candidate"))),
+        depths=tuple(namespace.get("RERANK_DEPTHS", (20,))),
+        chunks_per_doc=tuple(namespace.get("RERANK_CHUNKS_PER_DOC", (2,))),
+        chunk_aggs=tuple(namespace.get("RERANK_CHUNK_AGGS", ("top2_mean",))),
+        score_modes=tuple(namespace.get("RERANK_SCORE_MODES", ("ce_plus_candidate",))),
         model_names=tuple(_as_list(namespace.get("RERANK_MODEL_NAMES", (DEFAULT_RERANK_MODEL,)))),
         batch_size=int(namespace.get("RERANK_BATCH_SIZE", 16)),
         max_length=int(namespace.get("RERANK_MAX_LENGTH", 1024)),
@@ -111,7 +111,7 @@ def config_from_globals(namespace: Mapping[str, Any]) -> RerankSuiteConfig:
         chunk_search_depth=int(namespace.get("RERANK_CHUNK_SEARCH_DEPTH", 2500)),
         pair_char_limit=int(namespace.get("RERANK_PAIR_CHAR_LIMIT", 3500)),
         fallback_doc_chars=int(namespace.get("RERANK_FALLBACK_DOC_CHARS", 2500)),
-        create_submission=bool(namespace.get("RERANK_CREATE_SUBMISSION", True)),
+        create_submission=bool(namespace.get("RERANK_CREATE_SUBMISSION", False)),
         enable_e5_candidates=bool(namespace.get("RERANK_ENABLE_E5_CANDIDATES", False)),
         enable_bge_m3=bool(namespace.get("RERANK_ENABLE_BGE_M3", False)),
         candidate_experiments=(
