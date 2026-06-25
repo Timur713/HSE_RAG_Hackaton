@@ -15,6 +15,7 @@ class DenseConfig:
     normalize_embeddings: bool = True
     query_prefix: str = "query: "
     passage_prefix: str = "passage: "
+    max_seq_length: int | None = None
     device: str | None = None
 
 
@@ -43,6 +44,8 @@ class DenseRetriever:
             raise ValueError(f"Dense units are missing columns: {sorted(missing)}")
         self.units = units.reset_index(drop=True).copy()
         self.model = SentenceTransformer(self.config.model_name, device=self.config.device)
+        if self.config.max_seq_length is not None:
+            self.model.max_seq_length = self.config.max_seq_length
         passages = [self.config.passage_prefix + str(text) for text in self.units["text"].fillna("")]
         self.embeddings = self.model.encode(
             passages,

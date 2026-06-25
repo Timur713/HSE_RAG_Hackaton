@@ -19,3 +19,5 @@ submissions/*
 .venv/
 venv/
 id_*
+
+.idea

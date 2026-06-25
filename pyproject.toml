@@ -20,6 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 dense = [
     "sentence-transformers>=3.0",
+    "FlagEmbedding>=1.2.10",
 ]
 
 [tool.setuptools.packages.find]

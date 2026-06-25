@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from legal_hse.experiments import run_suite, select_best_experiment
+from legal_hse.experiments import recall_candidate_experiments, run_suite, select_best_experiment
 
 
 def parse_args() -> argparse.Namespace:
@@ -12,6 +12,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=["holdout", "cv", "train"], default="holdout")
     parser.add_argument("--experiment", action="append", dest="experiments", help="Experiment name. Repeatable.")
     parser.add_argument("--include-optional", action="store_true", help="Include dense optional experiments.")
+    parser.add_argument(
+        "--recall-candidates",
+        action="store_true",
+        help="Add the extended Recall@20/50 candidate-generation experiment suite.",
+    )
+    parser.add_argument(
+        "--include-bge-m3",
+        action="store_true",
+        help="Add BGE-M3 candidate-generation experiments from the extended recall suite.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument(
@@ -32,10 +42,17 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    extra_experiments = None
+    if args.recall_candidates or args.include_bge_m3:
+        extra_experiments = recall_candidate_experiments(
+            include_optional=args.include_optional,
+            include_bge_m3=args.include_bge_m3,
+        )
     summary = run_suite(
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         experiment_names=args.experiments,
+        extra_experiments=extra_experiments,
         mode=args.mode,
         include_optional=args.include_optional,
         seed=args.seed,

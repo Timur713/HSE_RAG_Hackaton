@@ -16,6 +16,7 @@ from legal_hse.fusion import aggregate_chunk_results, dedupe_ranked_docs, quota_
 from legal_hse.features import add_field_aware_text
 from legal_hse.metrics import dedupe_topk, evaluate_predictions
 from legal_hse.retrievers.base import SearchResult
+from legal_hse.retrievers.bge_m3 import BgeM3Config, BgeM3Retriever
 from legal_hse.retrievers.bm25 import BM25Config, BM25Retriever
 from legal_hse.retrievers.dense import DenseConfig, DenseRetriever
 from legal_hse.retrievers.tfidf import TfidfConfig, TfidfRetriever
@@ -526,39 +527,115 @@ def recall_candidate_experiments(
                 ),
             ]
         )
-        if include_bge_m3:
-            specs.extend(
-                [
-                    ExperimentSpec(
-                        name="dense_bge_m3_chunk_line_10_5_rd600",
-                        kind="dense_chunk",
-                        params={
-                            "config": {"model_name": "BAAI/bge-m3", "batch_size": 16},
-                            "chunk": {"unit": "line", "size": 10, "overlap": 5},
-                            "aggregation": "max",
-                            "rank_depth": 600,
+    if include_bge_m3:
+        specs.extend(
+            [
+                ExperimentSpec(
+                    name="dense_bge_m3_chunk_line_10_5_rd600",
+                    kind="dense_chunk",
+                    params={
+                        "config": {
+                            "model_name": "BAAI/bge-m3",
+                            "batch_size": 8,
+                            "query_prefix": "",
+                            "passage_prefix": "",
+                            "max_seq_length": 2048,
                         },
-                        priority="P2",
-                        description="BGE-M3 dense retrieval over line chunks.",
-                    ),
-                    ExperimentSpec(
-                        name="rrf_sparse_bge_m3_line",
-                        kind="rrf",
-                        params={
-                            "members": [
-                                "bm25_legal_lemma_doc",
-                                "bm25_legal_lemma_chunk_line_10_5_max_rd600",
-                                "tfidf_char_doc_3_5",
-                                "dense_bge_m3_chunk_line_10_5_rd600",
-                            ],
-                            "rrf_k": 60,
-                            "rank_depth": 100,
+                        "chunk": {"unit": "line", "size": 10, "overlap": 5},
+                        "aggregation": "max",
+                        "rank_depth": 600,
+                    },
+                    priority="P1",
+                    description="BGE-M3 dense retrieval over line chunks via sentence-transformers.",
+                ),
+                ExperimentSpec(
+                    name="bge_m3_dense_sparse_chunk_line_10_5_rd600",
+                    kind="bge_m3_chunk",
+                    params={
+                        "config": {
+                            "batch_size": 4,
+                            "max_length": 2048,
+                            "use_sparse": True,
+                            "dense_weight": 0.7,
+                            "sparse_weight": 0.3,
                         },
-                        priority="P2",
-                        description="Hybrid sparse + BGE-M3 dense RRF candidate generator.",
-                    ),
-                ]
-            )
+                        "chunk": {"unit": "line", "size": 10, "overlap": 5},
+                        "aggregation": "max",
+                        "rank_depth": 600,
+                    },
+                    priority="P1",
+                    description="Native BGE-M3 dense+sparse retrieval over line chunks.",
+                ),
+                ExperimentSpec(
+                    name="bge_m3_dense_sparse_chunk_char_1600_800_rd600",
+                    kind="bge_m3_chunk",
+                    params={
+                        "config": {
+                            "batch_size": 4,
+                            "max_length": 2048,
+                            "use_sparse": True,
+                            "dense_weight": 0.7,
+                            "sparse_weight": 0.3,
+                        },
+                        "chunk": {"unit": "char", "size": 1600, "overlap": 800},
+                        "aggregation": "max",
+                        "rank_depth": 600,
+                    },
+                    priority="P2",
+                    description="Native BGE-M3 dense+sparse retrieval over fixed char chunks.",
+                ),
+                ExperimentSpec(
+                    name="rrf_sparse_bge_m3_line",
+                    kind="rrf",
+                    params={
+                        "members": [
+                            "bm25_legal_lemma_doc",
+                            "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                            "tfidf_char_doc_3_5",
+                            "dense_bge_m3_chunk_line_10_5_rd600",
+                        ],
+                        "rrf_k": 60,
+                        "rank_depth": 100,
+                    },
+                    priority="P1",
+                    description="Hybrid sparse + BGE-M3 dense RRF candidate generator.",
+                ),
+                ExperimentSpec(
+                    name="rrf_sparse_bge_m3_native_line",
+                    kind="rrf",
+                    params={
+                        "members": [
+                            "bm25_legal_lemma_doc",
+                            "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                            "tfidf_char_doc_3_5",
+                            "bge_m3_dense_sparse_chunk_line_10_5_rd600",
+                        ],
+                        "rrf_k": 60,
+                        "rank_depth": 100,
+                    },
+                    priority="P1",
+                    description="Hybrid sparse + native BGE-M3 dense+sparse RRF candidate generator.",
+                ),
+                ExperimentSpec(
+                    name="quota_sparse_bge_m3_native_line_q8",
+                    kind="quota_rrf",
+                    params={
+                        "members": [
+                            "bm25_legal_lemma_doc",
+                            "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+                            "tfidf_char_doc_3_5",
+                            "bge_m3_dense_sparse_chunk_line_10_5_rd600",
+                        ],
+                        "quota": 8,
+                        "rrf_k": 60,
+                        "rank_depth": 100,
+                        "member_rank_depth": 100,
+                    },
+                    priority="P1",
+                    description="Quota/union fusion with native BGE-M3 dense+sparse candidates.",
+                ),
+            ]
+        )
 
     return _unique_specs(specs)
 
@@ -979,6 +1056,19 @@ def rank_queries(
     elif spec.kind == "dense_chunk":
         units = chunk_units(documents, ChunkConfig(**spec.params["chunk"]))
         retriever = DenseRetriever(spec.name, DenseConfig(**spec.params.get("config", {}))).fit(units)
+        raw_rankings = retriever.search(queries, top_k=int(spec.params.get("rank_depth", top_k)))
+        rankings = [
+            aggregate_chunk_results(
+                items,
+                method=str(spec.params.get("aggregation", "max")),
+                top_k=top_k,
+                source=spec.name,
+            )
+            for items in raw_rankings
+        ]
+    elif spec.kind == "bge_m3_chunk":
+        units = chunk_units(documents, ChunkConfig(**spec.params["chunk"]))
+        retriever = BgeM3Retriever(spec.name, BgeM3Config(**spec.params.get("config", {}))).fit(units)
         raw_rankings = retriever.search(queries, top_k=int(spec.params.get("rank_depth", top_k)))
         rankings = [
             aggregate_chunk_results(

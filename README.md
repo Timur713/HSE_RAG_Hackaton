@@ -28,6 +28,22 @@ python -m pip install -e ".[dense]"
 python scripts/run_experiments.py --data-dir . --include-optional --experiment dense_e5_chunk_line_10_5
 ```
 
+Для отдельной проверки BGE-M3 candidate retrieval:
+
+```bash
+python -m pip install -e ".[dense]"
+python scripts/run_experiments.py \
+  --data-dir . \
+  --mode cv \
+  --include-bge-m3 \
+  --eval-depth 100 \
+  --comparison-baseline rrf_sparse_deep_legal_lemma_char \
+  --experiment rrf_sparse_deep_legal_lemma_char \
+  --experiment dense_bge_m3_chunk_line_10_5_rd600 \
+  --experiment bge_m3_dense_sparse_chunk_line_10_5_rd600 \
+  --experiment rrf_sparse_bge_m3_native_line
+```
+
 ## Эксперименты
 
 Эксперименты задаются в `legal_hse.experiments.default_experiments()`.
@@ -45,6 +61,13 @@ python scripts/run_experiments.py --data-dir . --include-optional --experiment d
 - `rrf_sparse_doc_chunk_char_field` - та же fusion-ветка плюс field-aware BM25.
 - `dense_e5_chunk_line_10_5` - optional dense E5 chunk retriever.
 - `rrf_bm25_dense` - optional sparse+dense hybrid.
+
+Отдельные BGE-M3 эксперименты доступны через `recall_candidate_experiments(include_bge_m3=True)`:
+
+- `dense_bge_m3_chunk_line_10_5_rd600` - BGE-M3 dense chunk retrieval через `sentence-transformers`.
+- `bge_m3_dense_sparse_chunk_line_10_5_rd600` - native `FlagEmbedding` BGE-M3 dense+sparse chunk retrieval.
+- `rrf_sparse_bge_m3_native_line` - RRF sparse baseline branches + native BGE-M3 dense+sparse.
+- `quota_sparse_bge_m3_native_line_q8` - recall-oriented quota/union fusion с native BGE-M3.
 
 ## Валидация
 

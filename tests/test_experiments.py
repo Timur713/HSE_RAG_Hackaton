@@ -1,7 +1,22 @@
 import pandas as pd
 
-from legal_hse.experiments import _make_eval_folds, aggregate_validation_records
+from legal_hse.experiments import _make_eval_folds, aggregate_validation_records, recall_candidate_experiments
 from legal_hse.splits import make_group_holdout
+
+
+def test_recall_candidate_experiments_can_include_bge_m3_without_e5():
+    specs = recall_candidate_experiments(include_optional=False, include_bge_m3=True)
+    by_name = {spec.name: spec for spec in specs}
+
+    assert "dense_e5_chunk_line_10_5_rd600" not in by_name
+    assert by_name["dense_bge_m3_chunk_line_10_5_rd600"].kind == "dense_chunk"
+    assert by_name["bge_m3_dense_sparse_chunk_line_10_5_rd600"].kind == "bge_m3_chunk"
+    assert by_name["rrf_sparse_bge_m3_native_line"].params["members"] == [
+        "bm25_legal_lemma_doc",
+        "bm25_legal_lemma_chunk_line_10_5_max_rd600",
+        "tfidf_char_doc_3_5",
+        "bge_m3_dense_sparse_chunk_line_10_5_rd600",
+    ]
 
 
 def test_cv_eval_folds_use_valid_part_and_exclude_outer_holdout():
