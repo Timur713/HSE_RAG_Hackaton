@@ -25,7 +25,7 @@ from legal_hse.experiments import (
 )
 from legal_hse.metrics import dedupe_topk, evaluate_predictions
 from legal_hse.rerankers.cross_encoder import CrossEncoderConfig, CrossEncoderReranker
-from legal_hse.rerankers.flag import FlagEmbeddingReranker, FlagRerankerConfig
+from legal_hse.rerankers.hf_sequence import HfSequenceReranker, HfSequenceRerankerConfig
 from legal_hse.retrievers.base import SearchResult
 from legal_hse.retrievers.bm25 import BM25Config, BM25Retriever
 from legal_hse.splits import make_group_holdout, make_group_kfold
@@ -48,7 +48,7 @@ class RerankSuiteConfig:
     score_modes: tuple[str, ...] = ("ce", "ce_plus_candidate")
     model_names: tuple[str, ...] = (DEFAULT_RERANK_MODEL,)
     batch_size: int = 16
-    max_length: int = 512
+    max_length: int = 1024
     device: str | None = None
     chunk_search_depth: int = 2500
     pair_char_limit: int = 3500
@@ -106,7 +106,7 @@ def config_from_globals(namespace: Mapping[str, Any]) -> RerankSuiteConfig:
         score_modes=tuple(namespace.get("RERANK_SCORE_MODES", ("ce", "ce_plus_candidate"))),
         model_names=tuple(_as_list(namespace.get("RERANK_MODEL_NAMES", (DEFAULT_RERANK_MODEL,)))),
         batch_size=int(namespace.get("RERANK_BATCH_SIZE", 16)),
-        max_length=int(namespace.get("RERANK_MAX_LENGTH", 512)),
+        max_length=int(namespace.get("RERANK_MAX_LENGTH", 1024)),
         device=namespace.get("RERANK_DEVICE", None),
         chunk_search_depth=int(namespace.get("RERANK_CHUNK_SEARCH_DEPTH", 2500)),
         pair_char_limit=int(namespace.get("RERANK_PAIR_CHAR_LIMIT", 3500)),
@@ -619,13 +619,13 @@ def _get_reranker(
     rerankers: dict[str, Any],
 ) -> Any:
     if model_name not in rerankers:
-        if _use_flag_embedding_backend(model_name):
-            rerankers[model_name] = FlagEmbeddingReranker(
-                FlagRerankerConfig(
+        if _use_hf_sequence_backend(model_name):
+            rerankers[model_name] = HfSequenceReranker(
+                HfSequenceRerankerConfig(
                     model_name=model_name,
                     batch_size=config.batch_size,
-                    use_fp16=config.device != "cpu",
-                    normalize=False,
+                    max_length=config.max_length,
+                    device=config.device,
                 )
             ).load()
         else:
@@ -641,7 +641,7 @@ def _get_reranker(
 
 
 def _predict_scores(reranker: Any, pairs: list[tuple[str, str]], *, config: RerankSuiteConfig) -> list[float]:
-    if isinstance(reranker, FlagEmbeddingReranker):
+    if isinstance(reranker, HfSequenceReranker):
         return reranker.predict(pairs)
     if reranker.model is None:
         reranker.load()
@@ -654,7 +654,7 @@ def _predict_scores(reranker: Any, pairs: list[tuple[str, str]], *, config: Rera
     return [float(score) for score in np.asarray(scores, dtype=np.float32).reshape(-1)]
 
 
-def _use_flag_embedding_backend(model_name: str) -> bool:
+def _use_hf_sequence_backend(model_name: str) -> bool:
     return str(model_name).startswith("BAAI/bge-reranker")
 
 
