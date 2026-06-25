@@ -14,7 +14,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--candidate-experiment", action="append", default=None)
-    parser.add_argument("--model-name", action="append", default=None)
+    parser.add_argument(
+        "--model-name",
+        action="append",
+        default=None,
+        help="Reranker model. Repeatable. Default: BAAI/bge-reranker-v2-m3.",
+    )
     parser.add_argument("--enable-e5-candidates", action="store_true")
     parser.add_argument("--enable-bge-m3", action="store_true")
     parser.add_argument("--no-create-submission", action="store_true")

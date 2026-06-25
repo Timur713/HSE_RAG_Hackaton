@@ -25,13 +25,14 @@ from legal_hse.experiments import (
 )
 from legal_hse.metrics import dedupe_topk, evaluate_predictions
 from legal_hse.rerankers.cross_encoder import CrossEncoderConfig, CrossEncoderReranker
+from legal_hse.rerankers.flag import FlagEmbeddingReranker, FlagRerankerConfig
 from legal_hse.retrievers.base import SearchResult
 from legal_hse.retrievers.bm25 import BM25Config, BM25Retriever
 from legal_hse.splits import make_group_holdout, make_group_kfold
 from legal_hse.submission import write_submission
 
 
-DEFAULT_RERANK_MODEL = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 
 
 @dataclass(frozen=True)
@@ -166,7 +167,7 @@ def run_rerank_suite(data_dir: str | Path, config: RerankSuiteConfig | None = No
     run_id = config.run_id or datetime.now(timezone.utc).strftime("rerank_%Y%m%dT%H%M%SZ")
     records: list[dict[str, Any]] = []
     query_hit_rows: list[dict[str, Any]] = []
-    rerankers: dict[str, CrossEncoderReranker] = {}
+    rerankers: dict[str, Any] = {}
     configs_by_name: dict[str, RerankConfig] = {}
 
     print("Rerank suite")
@@ -378,7 +379,7 @@ def _make_rerank_eval_folds(train: pd.DataFrame, *, mode: str, seed: int, n_spli
 
 def _score_candidate_pairs(
     *,
-    reranker: CrossEncoderReranker,
+    reranker: Any,
     queries: list[str],
     qids: list[str],
     candidate_rankings: list[list[SearchResult]],
@@ -432,14 +433,7 @@ def _score_candidate_pairs(
     if not pairs:
         return pd.DataFrame(meta_rows)
 
-    if reranker.model is None:
-        reranker.load()
-    assert reranker.model is not None
-    scores = reranker.model.predict(
-        pairs,
-        batch_size=config.batch_size,
-        show_progress_bar=True,
-    )
+    scores = _predict_scores(reranker, pairs, config=config)
     pair_frame = pd.DataFrame(meta_rows)
     pair_frame["ce_score"] = np.asarray(scores, dtype=np.float32).reshape(-1)
     return pair_frame
@@ -494,7 +488,7 @@ def _make_rerank_submission(
     doc_text_by_id: dict[str, str],
     rerank_config: RerankConfig,
     suite_config: RerankSuiteConfig,
-    rerankers: dict[str, CrossEncoderReranker],
+    rerankers: dict[str, Any],
 ) -> Path:
     test_queries = data.test["question"].astype(str).tolist()
     test_qids = data.test["qid"].astype(str).tolist()
@@ -622,18 +616,46 @@ def _get_reranker(
     model_name: str,
     *,
     config: RerankSuiteConfig,
-    rerankers: dict[str, CrossEncoderReranker],
-) -> CrossEncoderReranker:
+    rerankers: dict[str, Any],
+) -> Any:
     if model_name not in rerankers:
-        rerankers[model_name] = CrossEncoderReranker(
-            CrossEncoderConfig(
-                model_name=model_name,
-                batch_size=config.batch_size,
-                max_length=config.max_length,
-                device=config.device,
-            )
-        ).load()
+        if _use_flag_embedding_backend(model_name):
+            rerankers[model_name] = FlagEmbeddingReranker(
+                FlagRerankerConfig(
+                    model_name=model_name,
+                    batch_size=config.batch_size,
+                    use_fp16=config.device != "cpu",
+                    normalize=False,
+                )
+            ).load()
+        else:
+            rerankers[model_name] = CrossEncoderReranker(
+                CrossEncoderConfig(
+                    model_name=model_name,
+                    batch_size=config.batch_size,
+                    max_length=config.max_length,
+                    device=config.device,
+                )
+            ).load()
     return rerankers[model_name]
+
+
+def _predict_scores(reranker: Any, pairs: list[tuple[str, str]], *, config: RerankSuiteConfig) -> list[float]:
+    if isinstance(reranker, FlagEmbeddingReranker):
+        return reranker.predict(pairs)
+    if reranker.model is None:
+        reranker.load()
+    assert reranker.model is not None
+    scores = reranker.model.predict(
+        pairs,
+        batch_size=config.batch_size,
+        show_progress_bar=True,
+    )
+    return [float(score) for score in np.asarray(scores, dtype=np.float32).reshape(-1)]
+
+
+def _use_flag_embedding_backend(model_name: str) -> bool:
+    return str(model_name).startswith("BAAI/bge-reranker")
 
 
 def _merge_specs(base, extra):

@@ -56,6 +56,18 @@ python scripts/run_rerank_experiments.py \
   --candidate-experiment quota_sparse_legal_lemma_char_q10
 ```
 
+По умолчанию rerank использует `BAAI/bge-reranker-v2-m3` через `FlagEmbedding`.
+Для контрольного сравнения со старым lightweight reranker:
+
+```bash
+python scripts/run_rerank_experiments.py \
+  --data-dir . \
+  --mode cv \
+  --model-name BAAI/bge-reranker-v2-m3 \
+  --model-name cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 \
+  --candidate-experiment rrf_sparse_deep_legal_lemma_char
+```
+
 ## Эксперименты
 
 Эксперименты задаются в `legal_hse.experiments.default_experiments()`.
