@@ -8,8 +8,9 @@
 
 - `src/legal_hse/` - переиспользуемый Python-пакет.
 - `scripts/run_experiments.py` - запуск экспериментов и запись метрик.
+- `scripts/run_rerank_experiments.py` - запуск cross-encoder rerank экспериментов.
 - `scripts/make_submission.py` - генерация финального сабмита тем же experiment config.
-- `main_colab.ipynb` - один Colab-файл с 4 блоками: setup, experiments, push metrics, submission.
+- `main_colab.ipynb` - Colab-файл только для запуска: setup, experiments, push metrics, submission.
 - `reports/metrics/` - JSONL-метрики для GitHub.
 - `submissions/` - локальные submission-файлы.
 
@@ -42,6 +43,17 @@ python scripts/run_experiments.py \
   --experiment dense_bge_m3_chunk_line_10_5_rd600 \
   --experiment bge_m3_dense_sparse_chunk_line_10_5_rd600 \
   --experiment rrf_sparse_bge_m3_native_line
+```
+
+Для cross-encoder rerank поверх recall-oriented кандидатов:
+
+```bash
+python -m pip install -e ".[dense]"
+python scripts/run_rerank_experiments.py \
+  --data-dir . \
+  --mode cv \
+  --candidate-experiment rrf_sparse_deep_legal_lemma_char \
+  --candidate-experiment quota_sparse_legal_lemma_char_q10
 ```
 
 ## Эксперименты
