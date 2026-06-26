@@ -23,10 +23,12 @@ def main() -> None:
     parser.add_argument("--enable-e5-candidates", action="store_true")
     parser.add_argument("--enable-bge-m3", action="store_true")
     parser.add_argument("--create-submission", action="store_true")
+    parser.add_argument("--submission-top-n", type=int, default=1)
     parser.add_argument("--depths", default="20")
     parser.add_argument("--chunks-per-doc", default="2")
     parser.add_argument("--chunk-aggs", default="top2_mean")
     parser.add_argument("--score-modes", default="ce_plus_candidate")
+    parser.add_argument("--candidate-score-weights", default="0.15")
     parser.add_argument("--eval-ks", default="5,10,20")
     parser.add_argument("--candidate-depth", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -44,8 +46,10 @@ def main() -> None:
         chunks_per_doc=_parse_int_tuple(args.chunks_per_doc),
         chunk_aggs=_parse_str_tuple(args.chunk_aggs),
         score_modes=_parse_str_tuple(args.score_modes),
+        candidate_score_weights=_parse_float_tuple(args.candidate_score_weights),
         model_names=tuple(args.model_name) if args.model_name else RerankSuiteConfig().model_names,
         create_submission=args.create_submission,
+        submission_top_n=args.submission_top_n,
         enable_e5_candidates=args.enable_e5_candidates,
         enable_bge_m3=args.enable_bge_m3,
         candidate_experiments=tuple(args.candidate_experiment) if args.candidate_experiment else None,
@@ -60,7 +64,8 @@ def main() -> None:
     print("Best rerank or candidate:", result.best_rerank_or_candidate)
     print("Summary:", result.summary_path)
     if result.submission_path is not None:
-        print("Submission:", result.submission_path)
+        for path in result.submission_paths:
+            print("Submission:", path)
 
 
 def _parse_int_tuple(value: str) -> tuple[int, ...]:
@@ -69,6 +74,10 @@ def _parse_int_tuple(value: str) -> tuple[int, ...]:
 
 def _parse_str_tuple(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _parse_float_tuple(value: str) -> tuple[float, ...]:
+    return tuple(float(item.strip()) for item in value.split(",") if item.strip())
 
 
 if __name__ == "__main__":

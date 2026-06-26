@@ -68,6 +68,21 @@ python scripts/run_rerank_experiments.py \
   --candidate-experiment rrf_sparse_deep_legal_lemma_char
 ```
 
+Targeted sweep до двух submission-файлов для free Colab GPU:
+
+```bash
+python scripts/run_rerank_experiments.py \
+  --data-dir . \
+  --candidate-experiment rrf_sparse_deep_legal_lemma_char \
+  --depths 20,30 \
+  --chunks-per-doc 2,3 \
+  --chunk-aggs top2_mean,max_plus_second \
+  --score-modes ce_plus_candidate \
+  --candidate-score-weights 0.10,0.20,0.30,0.40 \
+  --create-submission \
+  --submission-top-n 2
+```
+
 ## Эксперименты
 
 Эксперименты задаются в `legal_hse.experiments.default_experiments()`.

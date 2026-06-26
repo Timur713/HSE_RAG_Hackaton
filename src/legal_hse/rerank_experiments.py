@@ -46,6 +46,7 @@ class RerankSuiteConfig:
     chunks_per_doc: tuple[int, ...] = (2,)
     chunk_aggs: tuple[str, ...] = ("top2_mean",)
     score_modes: tuple[str, ...] = ("ce_plus_candidate",)
+    candidate_score_weights: tuple[float, ...] = (0.15,)
     model_names: tuple[str, ...] = (DEFAULT_RERANK_MODEL,)
     batch_size: int = 16
     max_length: int = 1024
@@ -54,6 +55,7 @@ class RerankSuiteConfig:
     pair_char_limit: int = 3500
     fallback_doc_chars: int = 2500
     create_submission: bool = False
+    submission_top_n: int = 1
     enable_e5_candidates: bool = False
     enable_bge_m3: bool = False
     candidate_experiments: tuple[str, ...] | None = None
@@ -70,6 +72,7 @@ class RerankConfig:
     chunks_per_doc: int
     chunk_agg: str
     score_mode: str
+    candidate_score_weight: float = 0.15
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,7 @@ class RerankSuiteResult:
     query_hits_path: Path
     latest_path: Path
     submission_path: Path | None = None
+    submission_paths: tuple[Path, ...] = ()
 
 
 def config_from_globals(namespace: Mapping[str, Any]) -> RerankSuiteConfig:
@@ -104,6 +108,7 @@ def config_from_globals(namespace: Mapping[str, Any]) -> RerankSuiteConfig:
         chunks_per_doc=tuple(namespace.get("RERANK_CHUNKS_PER_DOC", (2,))),
         chunk_aggs=tuple(namespace.get("RERANK_CHUNK_AGGS", ("top2_mean",))),
         score_modes=tuple(namespace.get("RERANK_SCORE_MODES", ("ce_plus_candidate",))),
+        candidate_score_weights=tuple(namespace.get("RERANK_CANDIDATE_SCORE_WEIGHTS", (0.15,))),
         model_names=tuple(_as_list(namespace.get("RERANK_MODEL_NAMES", (DEFAULT_RERANK_MODEL,)))),
         batch_size=int(namespace.get("RERANK_BATCH_SIZE", 16)),
         max_length=int(namespace.get("RERANK_MAX_LENGTH", 1024)),
@@ -112,6 +117,7 @@ def config_from_globals(namespace: Mapping[str, Any]) -> RerankSuiteConfig:
         pair_char_limit=int(namespace.get("RERANK_PAIR_CHAR_LIMIT", 3500)),
         fallback_doc_chars=int(namespace.get("RERANK_FALLBACK_DOC_CHARS", 2500)),
         create_submission=bool(namespace.get("RERANK_CREATE_SUBMISSION", False)),
+        submission_top_n=int(namespace.get("RERANK_SUBMISSION_TOP_N", 1)),
         enable_e5_candidates=bool(namespace.get("RERANK_ENABLE_E5_CANDIDATES", False)),
         enable_bge_m3=bool(namespace.get("RERANK_ENABLE_BGE_M3", False)),
         candidate_experiments=(
@@ -282,9 +288,16 @@ def run_rerank_suite(data_dir: str | Path, config: RerankSuiteConfig | None = No
     best_rerank_experiment = select_best_experiment(rerank_only, metric=sort_col)
     best_rerank_or_candidate = select_best_experiment(summary, metric=sort_col)
 
-    submission_path = None
+    submission_paths: tuple[Path, ...] = ()
     if config.create_submission:
-        submission_path = _make_rerank_submission(
+        top_rerank_names = (
+            rerank_only.sort_values(sort_col, ascending=False)
+            .head(max(1, int(config.submission_top_n)))["experiment"]
+            .astype(str)
+            .tolist()
+        )
+        top_rerank_configs = [configs_by_name[name] for name in top_rerank_names]
+        submission_paths = _make_rerank_submissions(
             data=data,
             data_dir=data_dir,
             all_specs=all_specs,
@@ -292,7 +305,7 @@ def run_rerank_suite(data_dir: str | Path, config: RerankSuiteConfig | None = No
             chunk_selector=chunk_selector,
             chunk_search_depth=chunk_search_depth,
             doc_text_by_id=doc_text_by_id,
-            rerank_config=configs_by_name[best_rerank_experiment],
+            rerank_configs=top_rerank_configs,
             suite_config=config,
             rerankers=rerankers,
         )
@@ -307,7 +320,8 @@ def run_rerank_suite(data_dir: str | Path, config: RerankSuiteConfig | None = No
         raw_path=raw_path,
         query_hits_path=query_hits_path,
         latest_path=latest_path,
-        submission_path=submission_path,
+        submission_path=submission_paths[0] if submission_paths else None,
+        submission_paths=submission_paths,
     )
 
 
@@ -349,6 +363,7 @@ def _normalized_config(config: RerankSuiteConfig) -> RerankSuiteConfig:
             "chunks_per_doc": tuple(int(k) for k in config.chunks_per_doc),
             "chunk_aggs": tuple(str(item) for item in config.chunk_aggs),
             "score_modes": tuple(str(item) for item in config.score_modes),
+            "candidate_score_weights": tuple(float(item) for item in config.candidate_score_weights),
             "model_names": tuple(str(item) for item in config.model_names),
             "candidate_experiments": (
                 tuple(str(item) for item in config.candidate_experiments)
@@ -469,7 +484,11 @@ def _prediction_lists_from_pairs(pair_frame: pd.DataFrame, qids: list[str], conf
         if config.score_mode == "ce":
             part["final_score"] = part["ce_score"]
         elif config.score_mode == "ce_plus_candidate":
-            part["final_score"] = 0.85 * _zscore(part["ce_score"]) + 0.15 * _zscore(part["candidate_score"])
+            candidate_weight = float(config.candidate_score_weight)
+            ce_weight = 1.0 - candidate_weight
+            part["final_score"] = ce_weight * _zscore(part["ce_score"]) + candidate_weight * _zscore(
+                part["candidate_score"]
+            )
         else:
             raise ValueError(f"Unknown score_mode: {config.score_mode}")
         part = part.sort_values(["final_score", "candidate_rank"], ascending=[False, True])
@@ -477,7 +496,7 @@ def _prediction_lists_from_pairs(pair_frame: pd.DataFrame, qids: list[str], conf
     return predictions
 
 
-def _make_rerank_submission(
+def _make_rerank_submissions(
     *,
     data,
     data_dir: Path,
@@ -486,43 +505,58 @@ def _make_rerank_submission(
     chunk_selector: BM25Retriever,
     chunk_search_depth: int,
     doc_text_by_id: dict[str, str],
-    rerank_config: RerankConfig,
+    rerank_configs: list[RerankConfig],
     suite_config: RerankSuiteConfig,
     rerankers: dict[str, Any],
-) -> Path:
+) -> tuple[Path, ...]:
+    if not rerank_configs:
+        return ()
     test_queries = data.test["question"].astype(str).tolist()
     test_qids = data.test["qid"].astype(str).tolist()
     test_chunk_rankings = chunk_selector.search(test_queries, top_k=chunk_search_depth)
     test_rank_cache: dict[str, list[list[SearchResult]]] = {}
-    test_candidate_rankings = rank_queries(
-        specs_by_name[rerank_config.candidate_experiment],
-        all_specs,
-        data.documents,
-        test_queries,
-        top_k=max(suite_config.candidate_depth, rerank_config.depth),
-        cache=test_rank_cache,
-    )
-    test_pair_frame = _score_candidate_pairs(
-        reranker=_get_reranker(rerank_config.model_name, config=suite_config, rerankers=rerankers),
-        queries=test_queries,
-        qids=test_qids,
-        candidate_rankings=test_candidate_rankings,
-        chunk_rankings=test_chunk_rankings,
-        max_depth=rerank_config.depth,
-        max_chunks=rerank_config.chunks_per_doc,
-        doc_text_by_id=doc_text_by_id,
-        config=suite_config,
-    )
-    test_predictions = _prediction_lists_from_pairs(test_pair_frame, test_qids, rerank_config)
-    output_path = data_dir / "submissions" / f"submission_{rerank_config.name}.csv"
-    return write_submission(
-        test_qids,
-        test_predictions,
-        output_path,
-        test=data.test,
-        documents=data.documents,
-        top_k=5,
-    )
+    output_paths: list[Path] = []
+
+    grouped: dict[tuple[str, str], list[RerankConfig]] = {}
+    for rerank_config in rerank_configs:
+        grouped.setdefault((rerank_config.candidate_experiment, rerank_config.model_name), []).append(rerank_config)
+
+    for (candidate_experiment, model_name), group_configs in grouped.items():
+        max_depth = max(item.depth for item in group_configs)
+        max_chunks = max(item.chunks_per_doc for item in group_configs)
+        test_candidate_rankings = rank_queries(
+            specs_by_name[candidate_experiment],
+            all_specs,
+            data.documents,
+            test_queries,
+            top_k=max(suite_config.candidate_depth, max_depth),
+            cache=test_rank_cache,
+        )
+        test_pair_frame = _score_candidate_pairs(
+            reranker=_get_reranker(model_name, config=suite_config, rerankers=rerankers),
+            queries=test_queries,
+            qids=test_qids,
+            candidate_rankings=test_candidate_rankings,
+            chunk_rankings=test_chunk_rankings,
+            max_depth=max_depth,
+            max_chunks=max_chunks,
+            doc_text_by_id=doc_text_by_id,
+            config=suite_config,
+        )
+        for rerank_config in group_configs:
+            test_predictions = _prediction_lists_from_pairs(test_pair_frame, test_qids, rerank_config)
+            output_path = data_dir / "submissions" / f"submission_{rerank_config.name}.csv"
+            output_paths.append(
+                write_submission(
+                    test_qids,
+                    test_predictions,
+                    output_path,
+                    test=data.test,
+                    documents=data.documents,
+                    top_k=5,
+                )
+            )
+    return tuple(output_paths)
 
 
 def _metric_record(
@@ -597,18 +631,25 @@ def _make_rerank_configs(candidate_name: str, model_name: str, config: RerankSui
                 if chunks_per_doc == 1 and chunk_agg != "max":
                     continue
                 for score_mode in config.score_modes:
-                    name = f"rerank_{candidate_slug}_{model_slug}_d{depth}_c{chunks_per_doc}_{chunk_agg}_{score_mode}"
-                    configs.append(
-                        RerankConfig(
-                            name=name,
-                            candidate_experiment=candidate_name,
-                            model_name=model_name,
-                            depth=int(depth),
-                            chunks_per_doc=int(chunks_per_doc),
-                            chunk_agg=str(chunk_agg),
-                            score_mode=str(score_mode),
+                    weights = (0.0,) if score_mode == "ce" else config.candidate_score_weights
+                    for candidate_weight in weights:
+                        weight_suffix = "" if score_mode == "ce" else f"_cw{_float_label(candidate_weight)}"
+                        name = (
+                            f"rerank_{candidate_slug}_{model_slug}_d{depth}_c{chunks_per_doc}_"
+                            f"{chunk_agg}_{score_mode}{weight_suffix}"
                         )
-                    )
+                        configs.append(
+                            RerankConfig(
+                                name=name,
+                                candidate_experiment=candidate_name,
+                                model_name=model_name,
+                                depth=int(depth),
+                                chunks_per_doc=int(chunks_per_doc),
+                                chunk_agg=str(chunk_agg),
+                                score_mode=str(score_mode),
+                                candidate_score_weight=float(candidate_weight),
+                            )
+                        )
     return configs
 
 
@@ -712,6 +753,10 @@ def _clean_pair_text(text: str, *, char_limit: int) -> str:
 def _slug(value: str, max_len: int = 80) -> str:
     value = re.sub(r"[^A-Za-z0-9]+", "_", str(value)).strip("_").lower()
     return value[:max_len].strip("_") or "x"
+
+
+def _float_label(value: float) -> str:
+    return f"{float(value):.2f}".rstrip("0").rstrip(".").replace(".", "p")
 
 
 def _as_list(value: Any) -> list[Any]:
